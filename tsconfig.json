@@ -22,5 +22,5 @@
     "strictBindCallApply": false,
     "noFallthroughCasesInSwitch": false
   },
-  "exclude": ["volcengine_podcasts_demo"]
+  "exclude": ["volcengine_podcasts_demo", "docs"]
 }
