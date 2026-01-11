@@ -5,6 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   CreatePodcastDto,
   PodcastCallbackPayload,
+  UsageInfo,
 } from './dto/podcast-tts.dto';
 import {
   PodcastProtocol,
@@ -47,6 +48,8 @@ interface TaskContext {
   // 字幕相关
   subtitleManager: SubtitleManager;
   currentSpeaker: string;
+  // 使用量相关（与字幕无关的任务级元数据）
+  usageInfo?: UsageInfo;
 }
 
 /**
@@ -369,11 +372,7 @@ export class PodcastService {
           );
 
           // 保存分轮音频到 MinIO
-          await this.saveRoundAudio(
-            taskId,
-            task,
-            roundEndPayload.audio_duration,
-          );
+          await this.saveRoundAudio(taskId, task);
         }
         // 更新重试相关状态
         task.isPodcastRoundEnd = true;
@@ -409,13 +408,15 @@ export class PodcastService {
         break;
 
       case EventType.USAGE_RESPONSE: {
-        this.logger.debug(`Usage response: ${JSON.stringify(frame.payload)}`);
-        // 存储 usage 信息到字幕管理器
         const usagePayload = frame.payload as {
           usage?: { inputTextTokens: number; outputAudioTokens: number };
         };
         if (usagePayload?.usage) {
-          task.subtitleManager.setUsageInfo(usagePayload.usage);
+          // 存储 usage 信息到任务上下文（与字幕无关）
+          task.usageInfo = usagePayload.usage;
+          this.logger.debug(
+            `Usage info received: input_tokens=${task.usageInfo.inputTextTokens}, output_tokens=${task.usageInfo.outputAudioTokens}`,
+          );
         }
         break;
       }
@@ -431,7 +432,6 @@ export class PodcastService {
   private async saveRoundAudio(
     taskId: string,
     task: TaskContext,
-    duration: number,
   ): Promise<void> {
     if (task.roundAudioChunks.length === 0) {
       this.logger.debug(
@@ -522,7 +522,24 @@ export class PodcastService {
     }
 
     // 清理 undefined 字段
-    return this.cleanPayload(payload) as StartSessionPayload;
+    const cleanedPayload = this.cleanPayload(payload) as StartSessionPayload;
+
+    // 记录参数信息（用于 only_nlp_text 和 return_audio_url 跟踪）
+    if (cleanedPayload.input_info) {
+      const inputInfo = cleanedPayload.input_info as Record<string, unknown>;
+      if (inputInfo.only_nlp_text) {
+        this.logger.debug(
+          `[Task ${task?.taskId}] only_nlp_text enabled: will extract NLP texts without audio`,
+        );
+      }
+      if (inputInfo.return_audio_url) {
+        this.logger.debug(
+          `[Task ${task?.taskId}] return_audio_url enabled: server will return audio URL`,
+        );
+      }
+    }
+
+    return cleanedPayload;
   }
 
   /**
@@ -570,6 +587,11 @@ export class PodcastService {
       task.status = 'completed';
       task.isPodcastRoundEnd = true;
 
+      // 获取播客详细信息
+      const podcastInfo = task.subtitleManager.getPodcastInfo();
+      // 使用任务上下文中存储的 usage 信息（而非字幕管理器中的）
+      const usageInfo = task.usageInfo;
+
       // 触发回调
       const callbackPayload: PodcastCallbackPayload = {
         task_id: taskId,
@@ -578,6 +600,14 @@ export class PodcastService {
         subtitle_url: subtitleUrl,
         round_audios: task.roundAudios,
         duration: task.totalDuration,
+        // 添加详细的播客信息和使用量
+        podcast_info: {
+          totalDuration: podcastInfo.totalDuration,
+          totalRounds: podcastInfo.totalRounds,
+          speakers: podcastInfo.speakers,
+          usage: usageInfo,
+        },
+        usage: usageInfo,
       };
 
       await this.callbackService.notifyWithRetry(
@@ -585,7 +615,9 @@ export class PodcastService {
         callbackPayload,
       );
 
-      this.logger.log(`Task ${taskId} completed successfully`);
+      this.logger.log(
+        `Task ${taskId} completed successfully, usage: input_tokens=${usageInfo?.inputTextTokens || 0}, output_tokens=${usageInfo?.outputAudioTokens || 0}`,
+      );
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Task completion error: ${errMsg}`);

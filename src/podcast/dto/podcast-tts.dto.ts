@@ -158,12 +158,26 @@ export class CreatePodcastDto {
   callback_url: string;
 }
 
+export interface UsageInfo {
+  inputTextTokens: number;
+  outputAudioTokens: number;
+}
+
+export interface PodcastInfoDetail {
+  totalDuration: number;
+  totalRounds: number;
+  speakers: string[];
+  usage?: UsageInfo;
+}
+
 export class PodcastCallbackPayload {
   task_id: string;
   status: 'success' | 'failed';
   audio_url?: string;
   subtitle_url?: string;
   round_audios?: Array<{ roundId: number; speaker: string; audioUrl: string }>;
+  podcast_info?: PodcastInfoDetail;
+  usage?: UsageInfo;
   error_message?: string;
   duration?: number;
 }
