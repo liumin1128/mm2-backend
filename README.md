@@ -2,26 +2,188 @@
   <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
 </p>
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+# MM2 Backend
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+基于 NestJS 的后端服务，集成火山引擎播客 TTS 功能。
 
-## Description
+## 功能特性
+
+- 🎙️ **播客 TTS 生成** - 调用火山引擎播客语音合成 API
+- 📦 **MinIO 存储** - 自动将生成的音频上传到 S3 兼容存储
+- 🔔 **回调通知** - 音频生成完成后自动触发回调
+
+## 快速开始
+
+### 1. 安装依赖
+
+```bash
+pnpm install
+```
+
+### 2. 配置环境变量
+
+复制 `.env.example` 到 `.env` 并填写配置：
+
+```bash
+cp .env.example .env
+```
+
+环境变量说明：
+
+| 变量名 | 说明 | 示例 |
+|--------|------|------|
+| `VOLC_APP_ID` | 火山引擎 APP ID | 从[控制台](https://console.volcengine.com/speech/service/10028)获取 |
+| `VOLC_ACCESS_KEY` | 火山引擎 Access Token | 从控制台获取 |
+| `MINIO_ENDPOINT` | MinIO/S3 端点 | localhost |
+| `MINIO_PORT` | MinIO 端口 | 9000 |
+| `MINIO_USE_SSL` | 是否使用 SSL | false |
+| `MINIO_ACCESS_KEY` | MinIO 访问密钥 | minioadmin |
+| `MINIO_SECRET_KEY` | MinIO 密钥 | minioadmin |
+| `MINIO_BUCKET` | 存储桶名称 | podcast-audio |
+| `PORT` | 服务端口 | 3000 |
+
+### 3. 启动服务
+
+```bash
+# 开发模式
+pnpm run start:dev
+
+# 生产模式
+pnpm run start:prod
+```
+
+## API 接口
+
+### 创建播客生成任务
+
+**POST** `/podcast/generate`
+
+请求示例（action=3 对话模式）：
+
+```json
+{
+  "input_id": "test_podcast",
+  "action": 3,
+  "use_head_music": false,
+  "audio_config": {
+    "format": "mp3",
+    "sample_rate": 24000,
+    "speech_rate": 0
+  },
+  "nlp_texts": [
+    {
+      "speaker": "zh_male_dayixiansheng_v2_saturn_bigtts",
+      "text": "今天呢我们要聊的呢是火山引擎在这个 FORCE 原动力大会上面的一些比较重磅的发布。"
+    },
+    {
+      "speaker": "zh_female_mizaitongxue_v2_saturn_bigtts",
+      "text": "来看看都有哪些亮点哈。"
+    }
+  ],
+  "callback_url": "https://your-server.com/callback"
+}
+```
+
+请求示例（action=0 长文本模式）：
+
+```json
+{
+  "input_id": "test_podcast",
+  "action": 0,
+  "input_text": "分析下当前的大模型发展",
+  "use_head_music": false,
+  "audio_config": {
+    "format": "mp3",
+    "sample_rate": 24000
+  },
+  "speaker_info": {
+    "random_order": true,
+    "speakers": [
+      "zh_male_dayixiansheng_v2_saturn_bigtts",
+      "zh_female_mizaitongxue_v2_saturn_bigtts"
+    ]
+  },
+  "callback_url": "https://your-server.com/callback"
+}
+```
+
+响应：
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "task_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "message": "播客生成任务已创建，生成完成后将通过回调通知"
+  }
+}
+```
+
+### 查询任务状态
+
+**GET** `/podcast/status/:taskId`
+
+响应：
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "task_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "status": "completed",
+    "current_round": 5,
+    "total_duration": 120.5,
+    "error": null
+  }
+}
+```
+
+### 回调通知格式
+
+当任务完成时，会向 `callback_url` 发送 POST 请求：
+
+**成功时：**
+
+```json
+{
+  "task_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "status": "success",
+  "audio_url": "https://minio.example.com/podcast-audio/podcast/xxx/audio.mp3?...",
+  "duration": 120.5
+}
+```
+
+**失败时：**
+
+```json
+{
+  "task_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "status": "failed",
+  "error_message": "错误描述"
+}
+```
+
+## 支持的发音人
+
+| 系列 | 发音人 | Speaker ID |
+|------|--------|------------|
+| 黑猫侦探社 | 咪仔 | `zh_female_mizaitongxue_v2_saturn_bigtts` |
+| 黑猫侦探社 | 大一先生 | `zh_male_dayixiansheng_v2_saturn_bigtts` |
+| 刘飞和潇磊 | 刘飞 | `zh_male_liufei_v2_saturn_bigtts` |
+| 刘飞和潇磊 | 潇磊 | `zh_male_xiaolei_v2_saturn_bigtts` |
+
+> 建议使用同系列的发音人配对使用效果更好
+
+## 参考文档
+
+- [火山引擎播客 TTS API 文档](https://www.volcengine.com/docs/6561/1668014)
+- [火山引擎控制台](https://console.volcengine.com/speech/service/10028)
+
+---
+
+## NestJS 原始文档
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
