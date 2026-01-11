@@ -197,7 +197,7 @@ export class PodcastService {
     }
 
     switch (frame.eventType) {
-      case EventType.CONNECTION_STARTED:
+      case EventType.CONNECTION_STARTED: {
         this.logger.log(`Connection started for task: ${taskId}`);
         task.connectionStarted = true;
         // 第二步: 发送 StartSession
@@ -209,8 +209,9 @@ export class PodcastService {
         ws.send(startSessionFrame);
         this.logger.debug(`StartSession sent for task: ${taskId}`);
         break;
+      }
 
-      case EventType.SESSION_STARTED:
+      case EventType.SESSION_STARTED: {
         this.logger.log(`Session started for task: ${taskId}`);
         task.sessionStarted = true;
         // 第三步: 发送 FinishSession（告知服务端可以开始处理）
@@ -219,6 +220,7 @@ export class PodcastService {
         ws.send(finishSessionFrame);
         this.logger.debug(`FinishSession sent for task: ${taskId}`);
         break;
+      }
 
       case EventType.PODCAST_ROUND_START: {
         const roundStartPayload =
