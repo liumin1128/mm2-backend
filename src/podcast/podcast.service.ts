@@ -27,6 +27,7 @@ interface RoundAudio {
 
 interface TaskContext {
   taskId: string;
+  inputId: string; // 用户提供的输入ID，用于文件路径
   sessionId: string;
   callbackUrl: string;
   audioFormat: string;
@@ -100,6 +101,7 @@ export class PodcastService {
 
     const taskContext: TaskContext = {
       taskId,
+      inputId: dto.input_id || 'unknown',
       sessionId,
       callbackUrl: dto.callback_url,
       audioFormat: dto.audio_config?.format || 'mp3',
@@ -442,7 +444,7 @@ export class PodcastService {
 
     try {
       const roundAudioBuffer = Buffer.concat(task.roundAudioChunks);
-      const objectName = `podcast/${taskId}/round_${task.currentRound}.${task.audioFormat}`;
+      const objectName = `podcast/${task.inputId}/${taskId}/round_${task.currentRound}.${task.audioFormat}`;
       // 获取内容类型
       const contentTypeMap: Record<string, string> = {
         mp3: 'audio/mpeg',
@@ -564,10 +566,10 @@ export class PodcastService {
       }
 
       // 上传音频到 MinIO
-      const audioUrl = await this.minioService.uploadAudio(
-        taskId,
+      const audioUrl = await this.minioService.uploadFile(
+        `podcast/${task.inputId}/${taskId}/audio.${task.audioFormat}`,
         audioBuffer,
-        task.audioFormat,
+        task.audioFormat === 'mp3' ? 'audio/mpeg' : 'audio/ogg',
       );
 
       // 生成并上传字幕
@@ -577,7 +579,7 @@ export class PodcastService {
         const srtContent = generateSRT(subtitles);
         const srtBuffer = Buffer.from(srtContent, 'utf-8');
         subtitleUrl = await this.minioService.uploadFile(
-          `${taskId}.srt`,
+          `podcast/${task.inputId}/${taskId}/subtitles.srt`,
           srtBuffer,
           'text/srt',
         );
