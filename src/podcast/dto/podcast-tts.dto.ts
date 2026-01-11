@@ -163,6 +163,7 @@ export class PodcastCallbackPayload {
   status: 'success' | 'failed';
   audio_url?: string;
   subtitle_url?: string;
+  round_audios?: Array<{ roundId: number; speaker: string; audioUrl: string }>;
   error_message?: string;
   duration?: number;
 }

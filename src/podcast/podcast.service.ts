@@ -18,12 +18,20 @@ import { MinioService } from '../minio/minio.service';
 import { CallbackService } from './callback.service';
 import { SubtitleManager, generateSRT } from './subtitle.util';
 
+interface RoundAudio {
+  roundId: number;
+  speaker: string;
+  audioUrl: string;
+}
+
 interface TaskContext {
   taskId: string;
   sessionId: string;
   callbackUrl: string;
   audioFormat: string;
   audioChunks: Buffer[];
+  roundAudioChunks: Buffer[]; // 当前轮的音频数据
+  roundAudios: RoundAudio[]; // 已保存的分轮音频
   totalDuration: number;
   currentRound: number;
   status: 'pending' | 'processing' | 'completed' | 'failed';
@@ -93,6 +101,8 @@ export class PodcastService {
       callbackUrl: dto.callback_url,
       audioFormat: dto.audio_config?.format || 'mp3',
       audioChunks: [],
+      roundAudioChunks: [],
+      roundAudios: [],
       totalDuration: 0,
       currentRound: 0,
       status: 'pending',
@@ -338,6 +348,7 @@ export class PodcastService {
         // 音频数据
         if (Buffer.isBuffer(frame.payload)) {
           task.audioChunks.push(frame.payload);
+          task.roundAudioChunks.push(frame.payload);
         }
         break;
 
@@ -355,6 +366,13 @@ export class PodcastService {
           );
           this.logger.debug(
             `Round ${task.currentRound} ended, duration: ${roundEndPayload.audio_duration}s`,
+          );
+
+          // 保存分轮音频到 MinIO
+          await this.saveRoundAudio(
+            taskId,
+            task,
+            roundEndPayload.audio_duration,
           );
         }
         // 更新重试相关状态
@@ -404,6 +422,60 @@ export class PodcastService {
 
       default:
         this.logger.debug(`Unhandled event type: ${frame.eventType}`);
+    }
+  }
+
+  /**
+   * 保存分轮音频
+   */
+  private async saveRoundAudio(
+    taskId: string,
+    task: TaskContext,
+    duration: number,
+  ): Promise<void> {
+    if (task.roundAudioChunks.length === 0) {
+      this.logger.debug(
+        `No audio data for round ${task.currentRound}, skipping save`,
+      );
+      return;
+    }
+
+    try {
+      const roundAudioBuffer = Buffer.concat(task.roundAudioChunks);
+      const objectName = `podcast/${taskId}/round_${task.currentRound}.${task.audioFormat}`;
+      // 获取内容类型
+      const contentTypeMap: Record<string, string> = {
+        mp3: 'audio/mpeg',
+        ogg_opus: 'audio/ogg',
+        pcm: 'audio/pcm',
+        aac: 'audio/aac',
+        wav: 'audio/wav',
+      };
+      const contentType =
+        contentTypeMap[task.audioFormat] || 'application/octet-stream';
+
+      const audioUrl = await this.minioService.uploadFile(
+        objectName,
+        roundAudioBuffer,
+        contentType,
+      );
+
+      task.roundAudios.push({
+        roundId: task.currentRound,
+        speaker: task.currentSpeaker,
+        audioUrl,
+      });
+
+      this.logger.log(
+        `Round ${task.currentRound} audio saved: ${objectName}, speaker: ${task.currentSpeaker}`,
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to save round ${task.currentRound} audio: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      // 清空当前轮音频数据
+      task.roundAudioChunks = [];
     }
   }
 
@@ -504,6 +576,7 @@ export class PodcastService {
         status: 'success',
         audio_url: audioUrl,
         subtitle_url: subtitleUrl,
+        round_audios: task.roundAudios,
         duration: task.totalDuration,
       };
 
