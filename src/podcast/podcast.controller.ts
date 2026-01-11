@@ -67,6 +67,10 @@ export class PodcastController {
         current_round: task.currentRound,
         total_duration: task.totalDuration,
         error: task.error,
+        retryCount: task.retryCount,
+        maxRetries: task.maxRetries,
+        lastFinishedRoundId: task.lastFinishedRoundId,
+        subtitleManager: task.subtitleManager,
       },
     };
   }

@@ -16,6 +16,7 @@ import {
 } from './podcast-protocol.util';
 import { MinioService } from '../minio/minio.service';
 import { CallbackService } from './callback.service';
+import { SubtitleManager, generateSRT } from './subtitle.util';
 
 interface TaskContext {
   taskId: string;
@@ -30,6 +31,36 @@ interface TaskContext {
   // 用于完整协议流程
   connectionStarted: boolean;
   sessionStarted: boolean;
+  // 重试机制相关
+  retryCount: number;
+  maxRetries: number;
+  lastFinishedRoundId: number;
+  isPodcastRoundEnd: boolean;
+  // 字幕相关
+  subtitleManager: SubtitleManager;
+  currentSpeaker: string;
+}
+
+/**
+ * StartSession 请求 Payload 接口
+ */
+interface StartSessionPayload extends Record<string, unknown> {
+  action: number;
+  input_id?: string;
+  input_text?: string;
+  prompt_text?: string;
+  nlp_texts?: unknown[];
+  input_info?: unknown;
+  audio_config?: unknown;
+  speaker_info?: unknown;
+  use_head_music?: boolean;
+  use_tail_music?: boolean;
+  aigc_watermark?: boolean;
+  aigc_metadata?: unknown;
+  retry_info?: {
+    retry_task_id: string;
+    last_finished_round_id: number;
+  };
 }
 
 @Injectable()
@@ -67,6 +98,14 @@ export class PodcastService {
       status: 'pending',
       connectionStarted: false,
       sessionStarted: false,
+      // 重试机制
+      retryCount: 0,
+      maxRetries: 5,
+      lastFinishedRoundId: -1,
+      isPodcastRoundEnd: true,
+      // 字幕
+      subtitleManager: new SubtitleManager(),
+      currentSpeaker: '',
     };
 
     this.tasks.set(taskId, taskContext);
@@ -87,9 +126,58 @@ export class PodcastService {
   }
 
   /**
-   * 启动播客生成
+   * 启动播客生成（带重试机制）
    */
   private async startPodcastGeneration(
+    taskId: string,
+    sessionId: string,
+    dto: CreatePodcastDto,
+  ): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      throw new Error('Task not found');
+    }
+
+    while (task.retryCount < task.maxRetries) {
+      try {
+        await this.executeWebSocketSession(taskId, sessionId, dto);
+
+        // 如果成功完成（isPodcastRoundEnd 为 true），跳出重试循环
+        if (task.isPodcastRoundEnd && task.status === 'completed') {
+          return;
+        }
+
+        // 如果未完成但连接关闭，准备重试
+        if (!task.isPodcastRoundEnd) {
+          task.retryCount++;
+          this.logger.warn(
+            `Task ${taskId} incomplete, retrying (${task.retryCount}/${task.maxRetries})`,
+          );
+          await this.delay(1000); // 重试前等待1秒
+        } else {
+          return; // 正常完成
+        }
+      } catch (error) {
+        task.retryCount++;
+        const errMsg = error instanceof Error ? error.message : String(error);
+        this.logger.error(
+          `Task ${taskId} error, retry ${task.retryCount}/${task.maxRetries}: ${errMsg}`,
+        );
+
+        if (task.retryCount >= task.maxRetries) {
+          throw error;
+        }
+        await this.delay(1000);
+      }
+    }
+
+    throw new Error(`Task ${taskId} failed after ${task.maxRetries} retries`);
+  }
+
+  /**
+   * 执行单次 WebSocket 会话
+   */
+  private async executeWebSocketSession(
     taskId: string,
     sessionId: string,
     dto: CreatePodcastDto,
@@ -145,7 +233,6 @@ export class PodcastService {
         this.logger.error(
           `WebSocket error for task ${taskId}: ${error.message}`,
         );
-        void this.handleTaskError(taskId, error.message);
         reject(error);
       });
 
@@ -153,15 +240,16 @@ export class PodcastService {
         this.logger.log(
           `WebSocket closed for task ${taskId}: code=${code}, reason=${reason.toString()}`,
         );
-
-        const currentTask = this.tasks.get(taskId);
-        if (currentTask && currentTask.status === 'processing') {
-          // 如果还在处理中就关闭了，说明可能有问题
-          this.logger.warn(`WebSocket closed unexpectedly for task ${taskId}`);
-        }
         resolve();
       });
     });
+  }
+
+  /**
+   * 延迟函数
+   */
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**
@@ -201,7 +289,7 @@ export class PodcastService {
         this.logger.log(`Connection started for task: ${taskId}`);
         task.connectionStarted = true;
         // 第二步: 发送 StartSession
-        const payload = this.buildPayload(dto);
+        const payload = this.buildPayload(dto, task);
         const startSessionFrame = PodcastProtocol.buildStartSessionFrame(
           sessionId,
           payload,
@@ -226,8 +314,22 @@ export class PodcastService {
         const roundStartPayload =
           frame.payload as unknown as PodcastRoundStartPayload;
         task.currentRound = roundStartPayload?.round_id ?? task.currentRound;
+        task.isPodcastRoundEnd = false;
+        task.currentSpeaker = String(
+          roundStartPayload?.speaker || roundStartPayload?.round_type || '',
+        );
+
+        // 添加字幕条目（只为有文本的轮次创建）
+        if (roundStartPayload?.text) {
+          task.subtitleManager.addSubtitleEntry(
+            task.currentSpeaker,
+            roundStartPayload.text,
+            task.currentRound,
+          );
+        }
+
         this.logger.debug(
-          `Round ${task.currentRound} started, speaker: ${roundStartPayload?.speaker}`,
+          `Round ${task.currentRound} started, speaker: ${task.currentSpeaker}`,
         );
         break;
       }
@@ -246,10 +348,18 @@ export class PodcastService {
           this.logger.error(`Round error: ${roundEndPayload.error_msg}`);
         } else if (roundEndPayload?.audio_duration) {
           task.totalDuration += roundEndPayload.audio_duration;
+          // 更新字幕时间戳
+          task.subtitleManager.updateSubtitleEndTime(
+            task.currentRound,
+            roundEndPayload.audio_duration,
+          );
           this.logger.debug(
             `Round ${task.currentRound} ended, duration: ${roundEndPayload.audio_duration}s`,
           );
         }
+        // 更新重试相关状态
+        task.isPodcastRoundEnd = true;
+        task.lastFinishedRoundId = task.currentRound;
         break;
       }
 
@@ -280,9 +390,17 @@ export class PodcastService {
         ws.close();
         break;
 
-      case EventType.USAGE_RESPONSE:
+      case EventType.USAGE_RESPONSE: {
         this.logger.debug(`Usage response: ${JSON.stringify(frame.payload)}`);
+        // 存储 usage 信息到字幕管理器
+        const usagePayload = frame.payload as {
+          usage?: { inputTextTokens: number; outputAudioTokens: number };
+        };
+        if (usagePayload?.usage) {
+          task.subtitleManager.setUsageInfo(usagePayload.usage);
+        }
         break;
+      }
 
       default:
         this.logger.debug(`Unhandled event type: ${frame.eventType}`);
@@ -290,29 +408,49 @@ export class PodcastService {
   }
 
   /**
+   * 清理对象中的 undefined 值
+   */
+  private cleanPayload(obj: Record<string, unknown>): Record<string, unknown> {
+    return Object.fromEntries(
+      Object.entries(obj).filter(([, value]) => value !== undefined),
+    );
+  }
+
+  /**
    * 构建请求 payload
    */
-  private buildPayload(dto: CreatePodcastDto): object {
-    const payload: Record<string, unknown> = {
+  private buildPayload(
+    dto: CreatePodcastDto,
+    task?: TaskContext,
+  ): StartSessionPayload {
+    const payload: StartSessionPayload = {
       action: dto.action,
+      input_id: dto.input_id,
+      input_text: dto.input_text,
+      prompt_text: dto.prompt_text,
+      nlp_texts: dto.nlp_texts,
+      input_info: dto.input_info,
+      audio_config: dto.audio_config,
+      speaker_info: dto.speaker_info,
+      use_head_music: dto.use_head_music,
+      use_tail_music: dto.use_tail_music,
+      aigc_watermark: dto.aigc_watermark,
+      aigc_metadata: dto.aigc_metadata,
     };
 
-    if (dto.input_id) payload.input_id = dto.input_id;
-    if (dto.input_text) payload.input_text = dto.input_text;
-    if (dto.prompt_text) payload.prompt_text = dto.prompt_text;
-    if (dto.nlp_texts) payload.nlp_texts = dto.nlp_texts;
-    if (dto.input_info) payload.input_info = dto.input_info;
-    if (dto.audio_config) payload.audio_config = dto.audio_config;
-    if (dto.speaker_info) payload.speaker_info = dto.speaker_info;
-    if (dto.use_head_music !== undefined)
-      payload.use_head_music = dto.use_head_music;
-    if (dto.use_tail_music !== undefined)
-      payload.use_tail_music = dto.use_tail_music;
-    if (dto.aigc_watermark !== undefined)
-      payload.aigc_watermark = dto.aigc_watermark;
-    if (dto.aigc_metadata) payload.aigc_metadata = dto.aigc_metadata;
+    // 添加重试信息（断点续传）
+    if (task && !task.isPodcastRoundEnd && task.lastFinishedRoundId >= 0) {
+      payload.retry_info = {
+        retry_task_id: task.taskId,
+        last_finished_round_id: task.lastFinishedRoundId,
+      };
+      this.logger.debug(
+        `Adding retry_info: task=${task.taskId}, lastRound=${task.lastFinishedRoundId}`,
+      );
+    }
 
-    return payload;
+    // 清理 undefined 字段
+    return this.cleanPayload(payload) as StartSessionPayload;
   }
 
   /**
@@ -336,20 +474,36 @@ export class PodcastService {
         throw new Error('No audio data received');
       }
 
-      // 上传到 MinIO
+      // 上传音频到 MinIO
       const audioUrl = await this.minioService.uploadAudio(
         taskId,
         audioBuffer,
         task.audioFormat,
       );
 
+      // 生成并上传字幕
+      let subtitleUrl: string | undefined;
+      const subtitles = task.subtitleManager.getSubtitles();
+      if (subtitles.length > 0) {
+        const srtContent = generateSRT(subtitles);
+        const srtBuffer = Buffer.from(srtContent, 'utf-8');
+        subtitleUrl = await this.minioService.uploadFile(
+          `${taskId}.srt`,
+          srtBuffer,
+          'text/srt',
+        );
+        this.logger.log(`Subtitle uploaded: ${subtitleUrl}`);
+      }
+
       task.status = 'completed';
+      task.isPodcastRoundEnd = true;
 
       // 触发回调
       const callbackPayload: PodcastCallbackPayload = {
         task_id: taskId,
         status: 'success',
         audio_url: audioUrl,
+        subtitle_url: subtitleUrl,
         duration: task.totalDuration,
       };
 

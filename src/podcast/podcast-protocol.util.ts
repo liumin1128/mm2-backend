@@ -121,6 +121,7 @@ export interface PodcastRoundStartPayload {
   speaker: string;
   round_id: number;
   text: string;
+  round_type?: string;
 }
 
 export interface PodcastRoundEndPayload {

@@ -162,6 +162,7 @@ export class PodcastCallbackPayload {
   task_id: string;
   status: 'success' | 'failed';
   audio_url?: string;
+  subtitle_url?: string;
   error_message?: string;
   duration?: number;
 }
