@@ -188,7 +188,7 @@ export class PodcastService {
     this.logger.debug(`Received event: ${eventName} for task: ${taskId}`);
 
     // 检查错误帧
-    if (frame.messageType === MsgType.ERROR || frame.errorCode) {
+    if (frame.messageType === (MsgType.ERROR as number) || frame.errorCode) {
       const errorMsg = `Error code: ${frame.errorCode}, payload: ${JSON.stringify(frame.payload)}`;
       this.logger.error(`Error frame received: ${errorMsg}`);
       void this.handleTaskError(taskId, errorMsg);
