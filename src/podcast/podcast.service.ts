@@ -9,6 +9,7 @@ import {
 import {
   PodcastProtocol,
   EventType,
+  MsgType,
   PodcastRoundStartPayload,
   PodcastRoundEndPayload,
   PodcastEndPayload,
@@ -26,6 +27,9 @@ interface TaskContext {
   currentRound: number;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   error?: string;
+  // 用于完整协议流程
+  connectionStarted: boolean;
+  sessionStarted: boolean;
 }
 
 @Injectable()
@@ -61,6 +65,8 @@ export class PodcastService {
       totalDuration: 0,
       currentRound: 0,
       status: 'pending',
+      connectionStarted: false,
+      sessionStarted: false,
     };
 
     this.tasks.set(taskId, taskContext);
@@ -98,13 +104,14 @@ export class PodcastService {
     }
 
     return new Promise((resolve, reject) => {
+      const connectId = uuidv4();
       const ws = new WebSocket(this.wsUrl, {
         headers: {
           'X-Api-App-Id': appId,
           'X-Api-Access-Key': accessKey,
           'X-Api-Resource-Id': this.resourceId,
           'X-Api-App-Key': this.appKey,
-          'X-Api-Request-Id': taskId,
+          'X-Api-Connect-Id': connectId,
         },
       });
 
@@ -118,24 +125,20 @@ export class PodcastService {
         this.logger.log(`WebSocket connected for task: ${taskId}`);
         task.status = 'processing';
 
-        // 构建请求 payload
-        const payload = this.buildPayload(dto);
-
-        // 发送 StartSession 帧
-        const frame = PodcastProtocol.buildStartSessionFrame(
-          sessionId,
-          payload,
-        );
-        ws.send(frame);
-        this.logger.debug(`StartSession sent for task: ${taskId}`);
+        // 第一步: 发送 StartConnection
+        const startConnFrame = PodcastProtocol.buildStartConnectionFrame();
+        ws.send(startConnFrame);
+        this.logger.debug(`StartConnection sent for task: ${taskId}`);
       });
 
       ws.on('message', (data: Buffer) => {
-        this.handleMessage(taskId, ws, data).catch((error: unknown) => {
-          this.logger.error(
-            `Error handling message for task ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        });
+        this.handleMessage(taskId, sessionId, ws, data, dto).catch(
+          (error: unknown) => {
+            this.logger.error(
+              `Error handling message for task ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          },
+        );
       });
 
       ws.on('error', (error: Error) => {
@@ -166,8 +169,10 @@ export class PodcastService {
    */
   private async handleMessage(
     taskId: string,
+    sessionId: string,
     ws: WebSocket,
     data: Buffer,
+    dto: CreatePodcastDto,
   ): Promise<void> {
     const task = this.tasks.get(taskId);
     if (!task) {
@@ -183,7 +188,7 @@ export class PodcastService {
     this.logger.debug(`Received event: ${eventName} for task: ${taskId}`);
 
     // 检查错误帧
-    if (frame.errorCode) {
+    if (frame.messageType === MsgType.ERROR || frame.errorCode) {
       const errorMsg = `Error code: ${frame.errorCode}, payload: ${JSON.stringify(frame.payload)}`;
       this.logger.error(`Error frame received: ${errorMsg}`);
       void this.handleTaskError(taskId, errorMsg);
@@ -192,8 +197,27 @@ export class PodcastService {
     }
 
     switch (frame.eventType) {
+      case EventType.CONNECTION_STARTED:
+        this.logger.log(`Connection started for task: ${taskId}`);
+        task.connectionStarted = true;
+        // 第二步: 发送 StartSession
+        const payload = this.buildPayload(dto);
+        const startSessionFrame = PodcastProtocol.buildStartSessionFrame(
+          sessionId,
+          payload,
+        );
+        ws.send(startSessionFrame);
+        this.logger.debug(`StartSession sent for task: ${taskId}`);
+        break;
+
       case EventType.SESSION_STARTED:
         this.logger.log(`Session started for task: ${taskId}`);
+        task.sessionStarted = true;
+        // 第三步: 发送 FinishSession（告知服务端可以开始处理）
+        const finishSessionFrame =
+          PodcastProtocol.buildFinishSessionFrame(sessionId);
+        ws.send(finishSessionFrame);
+        this.logger.debug(`FinishSession sent for task: ${taskId}`);
         break;
 
       case EventType.PODCAST_ROUND_START: {
@@ -240,9 +264,10 @@ export class PodcastService {
 
       case EventType.SESSION_FINISHED: {
         this.logger.log(`Session finished for task: ${taskId}`);
-        // 发送 FinishConnection
-        const finishFrame = PodcastProtocol.buildFinishConnectionFrame();
-        ws.send(finishFrame);
+        // 第四步: 发送 FinishConnection
+        const finishConnFrame = PodcastProtocol.buildFinishConnectionFrame();
+        ws.send(finishConnFrame);
+        this.logger.debug(`FinishConnection sent for task: ${taskId}`);
         break;
       }
 
