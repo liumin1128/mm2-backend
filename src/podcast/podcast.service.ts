@@ -527,7 +527,13 @@ export class PodcastService {
     const cleanedPayload = this.cleanPayload(payload) as StartSessionPayload;
 
     // 记录参数信息（用于 only_nlp_text 和 return_audio_url 跟踪）
+    this.logger.log(
+      `StartSession Payload - action: ${cleanedPayload.action}, nlp_texts count: ${Array.isArray(cleanedPayload.nlp_texts) ? cleanedPayload.nlp_texts.length : 0}`,
+    );
     if (cleanedPayload.input_info) {
+      this.logger.debug(
+        `Payload nlp_texts: ${JSON.stringify(cleanedPayload.nlp_texts)}`,
+      );
       const inputInfo = cleanedPayload.input_info as Record<string, unknown>;
       if (inputInfo.only_nlp_text) {
         this.logger.debug(
@@ -576,6 +582,8 @@ export class PodcastService {
       let subtitleUrl: string | undefined;
       const subtitles = task.subtitleManager.getSubtitles();
       if (subtitles.length > 0) {
+        // 均匀分布字幕时间
+        task.subtitleManager.distributeSubtitleTimes(task.totalDuration);
         const srtContent = generateSRT(subtitles);
         const srtBuffer = Buffer.from(srtContent, 'utf-8');
         subtitleUrl = await this.minioService.uploadFile(

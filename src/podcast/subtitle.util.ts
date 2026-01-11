@@ -64,6 +64,7 @@ export class SubtitleManager {
   updateSubtitleEndTime(roundId: number, duration: number): void {
     const subtitle = this.subtitles.find((s) => s.roundId === roundId);
     if (subtitle) {
+      // 为每个字幕分配均等的时间（如果只有一个字幕，就是总时长）
       subtitle.endTime = this.currentStartTime + duration;
       this.totalDuration += duration;
       this.currentStartTime += duration;
@@ -72,6 +73,31 @@ export class SubtitleManager {
       this.totalDuration += duration;
       this.currentStartTime += duration;
     }
+  }
+
+  /**
+   * 计算均匀分布的字幕时间
+   * 当 API 无法提供每轮具体时长时，按字幕条数均匀分布总时长
+   */
+  distributeSubtitleTimes(totalDuration: number): void {
+    const count = this.subtitles.length;
+    if (count === 0) {
+      this.totalDuration = totalDuration;
+      return;
+    }
+
+    // 每条字幕分配的时长（秒）
+    const timePerSubtitle = totalDuration / count;
+    let currentTime = 0;
+
+    for (const subtitle of this.subtitles) {
+      subtitle.startTime = currentTime;
+      subtitle.endTime = currentTime + timePerSubtitle;
+      currentTime += timePerSubtitle;
+    }
+
+    this.totalDuration = totalDuration;
+    this.currentStartTime = totalDuration;
   }
 
   /**
