@@ -216,6 +216,8 @@ export class PodcastService {
           'X-Api-App-Key': this.appKey,
           'X-Api-Connect-Id': connectId,
         },
+        // 重要：跳过 UTF8 验证，避免二进制音频数据导致连接异常
+        skipUTF8Validation: true,
       });
 
       const task = this.tasks.get(taskId);
@@ -248,13 +250,27 @@ export class PodcastService {
         this.logger.error(
           `WebSocket error for task ${taskId}: ${error.message}`,
         );
+        // 打印完整错误堆栈用于调试
+        this.logger.error(`WebSocket error stack: ${error.stack}`);
         reject(error);
       });
 
       ws.on('close', (code, reason) => {
+        const reasonStr = reason.toString() || 'No reason provided';
         this.logger.log(
-          `WebSocket closed for task ${taskId}: code=${code}, reason=${reason.toString()}`,
+          `WebSocket closed for task ${taskId}: code=${code}, reason=${reasonStr}`,
         );
+        // 根据关闭码判断是否为异常关闭
+        // 1000: 正常关闭, 1001: 离开, 1006: 异常关闭(无close frame)
+        if (code === 1006) {
+          this.logger.warn(
+            `Task ${taskId}: Abnormal closure (1006) - 可能是认证失败、协议错误或网络问题`,
+          );
+        } else if (code === 1002) {
+          this.logger.warn(
+            `Task ${taskId}: Protocol error (1002) - 消息格式可能不正确`,
+          );
+        }
         resolve();
       });
     });
@@ -292,8 +308,20 @@ export class PodcastService {
 
     // 检查错误帧
     if (frame.messageType === (MsgType.ERROR as number) || frame.errorCode) {
-      const errorMsg = `Error code: ${frame.errorCode}, payload: ${JSON.stringify(frame.payload)}`;
-      this.logger.error(`Error frame received: ${errorMsg}`);
+      // 解析详细错误信息
+      let errorDetail = '';
+      if (frame.payload) {
+        if (Buffer.isBuffer(frame.payload)) {
+          errorDetail = frame.payload.toString('utf-8');
+        } else if (typeof frame.payload === 'object') {
+          errorDetail = JSON.stringify(frame.payload);
+        }
+      }
+      const errorMsg = `Error code: ${frame.errorCode || 'unknown'}, msgType: ${frame.messageType}, detail: ${errorDetail}`;
+      this.logger.error(`[Task ${taskId}] Error frame received - ${errorMsg}`);
+      this.logger.error(
+        `[Task ${taskId}] 可能原因: 1)认证失败 2)协议顺序错误(Round error) 3)参数格式不正确`,
+      );
       void this.handleTaskError(taskId, errorMsg);
       ws.close();
       return;
@@ -333,6 +361,12 @@ export class PodcastService {
         task.currentSpeaker = String(
           roundStartPayload?.speaker || roundStartPayload?.round_type || '',
         );
+        // 保存当前 Round 的文本（用于错误诊断）
+        (task as TaskContext & { currentRoundText?: string }).currentRoundText =
+          roundStartPayload?.text || '';
+
+        // 重置当前轮的音频数据（确保每轮音频独立）
+        task.roundAudioChunks = [];
 
         // 添加字幕条目（只为有文本的轮次创建）
         if (roundStartPayload?.text) {
@@ -343,8 +377,13 @@ export class PodcastService {
           );
         }
 
+        // 记录 Round 开始信息（包含文本预览，用于调试 TTS 失败）
+        const textPreview = roundStartPayload?.text
+          ? roundStartPayload.text.substring(0, 50) +
+            (roundStartPayload.text.length > 50 ? '...' : '')
+          : '[无文本]';
         this.logger.debug(
-          `Round ${task.currentRound} started, speaker: ${task.currentSpeaker}`,
+          `Round ${task.currentRound} started, speaker: ${task.currentSpeaker}, text: ${textPreview}`,
         );
         break;
       }
@@ -360,25 +399,57 @@ export class PodcastService {
       case EventType.PODCAST_ROUND_END: {
         const roundEndPayload =
           frame.payload as unknown as PodcastRoundEndPayload;
-        if (roundEndPayload?.is_error) {
-          this.logger.error(`Round error: ${roundEndPayload.error_msg}`);
-        } else if (roundEndPayload?.audio_duration) {
-          task.totalDuration += roundEndPayload.audio_duration;
-          // 更新字幕时间戳
-          task.subtitleManager.updateSubtitleEndTime(
-            task.currentRound,
-            roundEndPayload.audio_duration,
-          );
-          this.logger.debug(
-            `Round ${task.currentRound} ended, duration: ${roundEndPayload.audio_duration}s`,
-          );
 
-          // 保存分轮音频到 MinIO
-          await this.saveRoundAudio(taskId, task);
+        // 捕获当前轮次信息（避免异步竞态问题）
+        const currentRoundId = task.currentRound;
+        const currentSpeaker = task.currentSpeaker;
+        const currentAudioChunks = [...task.roundAudioChunks]; // 复制数组
+
+        // 立即清空当前轮音频数据（在下一轮开始前）
+        task.roundAudioChunks = [];
+
+        if (roundEndPayload?.is_error) {
+          // 获取当前 Round 的文本用于诊断
+          const currentText =
+            (task as TaskContext & { currentRoundText?: string })
+              .currentRoundText || '';
+          const textLen = currentText.length;
+          const textPreview =
+            currentText.substring(0, 100) + (textLen > 100 ? '...' : '');
+          this.logger.error(
+            `[Round ${currentRoundId}] TTS Error: ${roundEndPayload.error_msg}`,
+          );
+          this.logger.error(
+            `[Round ${currentRoundId}] Speaker: ${currentSpeaker}, TextLen: ${textLen}, Text: ${textPreview}`,
+          );
+        } else {
+          // 处理音频时长
+          if (roundEndPayload?.audio_duration) {
+            task.totalDuration += roundEndPayload.audio_duration;
+            // 更新字幕时间戳
+            task.subtitleManager.updateSubtitleEndTime(
+              currentRoundId,
+              roundEndPayload.audio_duration,
+            );
+            this.logger.debug(
+              `Round ${currentRoundId} ended, duration: ${roundEndPayload.audio_duration}s`,
+            );
+          }
+
+          // 只要有音频数据就保存分轮音频（即使没有 audio_duration）
+          if (currentAudioChunks.length > 0) {
+            await this.saveRoundAudio(
+              taskId,
+              task,
+              currentRoundId,
+              currentSpeaker,
+              currentAudioChunks,
+            );
+          }
         }
         // 更新重试相关状态
         task.isPodcastRoundEnd = true;
-        task.lastFinishedRoundId = task.currentRound;
+        task.lastFinishedRoundId = currentRoundId;
         break;
       }
 
@@ -430,21 +501,27 @@ export class PodcastService {
 
   /**
    * 保存分轮音频
+   * @param taskId 任务ID
+   * @param task 任务上下文
+   * @param roundId 轮次ID（传入以避免异步竞态）
+   * @param speaker 说话人（传入以避免异步竞态）
+   * @param audioChunks 音频数据块（传入以避免异步竞态）
    */
   private async saveRoundAudio(
     taskId: string,
     task: TaskContext,
+    roundId: number,
+    speaker: string,
+    audioChunks: Buffer[],
   ): Promise<void> {
-    if (task.roundAudioChunks.length === 0) {
-      this.logger.debug(
-        `No audio data for round ${task.currentRound}, skipping save`,
-      );
+    if (audioChunks.length === 0) {
+      this.logger.debug(`No audio data for round ${roundId}, skipping save`);
       return;
     }
 
     try {
-      const roundAudioBuffer = Buffer.concat(task.roundAudioChunks);
-      const objectName = `podcast/${task.inputId}/${taskId}/round_${task.currentRound}.${task.audioFormat}`;
+      const roundAudioBuffer = Buffer.concat(audioChunks);
+      const objectName = `podcast/${task.inputId}/${taskId}/round_${roundId}.${task.audioFormat}`;
       // 获取内容类型
       const contentTypeMap: Record<string, string> = {
         mp3: 'audio/mpeg',
@@ -463,21 +540,18 @@ export class PodcastService {
       );
 
       task.roundAudios.push({
-        roundId: task.currentRound,
-        speaker: task.currentSpeaker,
+        roundId,
+        speaker,
         audioUrl,
       });
 
       this.logger.log(
-        `Round ${task.currentRound} audio saved: ${objectName}, speaker: ${task.currentSpeaker}`,
+        `Round ${roundId} audio saved: ${objectName}, speaker: ${speaker}`,
       );
     } catch (error) {
       this.logger.error(
-        `Failed to save round ${task.currentRound} audio: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to save round ${roundId} audio: ${error instanceof Error ? error.message : String(error)}`,
       );
-    } finally {
-      // 清空当前轮音频数据
-      task.roundAudioChunks = [];
     }
   }
 
@@ -526,9 +600,15 @@ export class PodcastService {
     // 清理 undefined 字段
     const cleanedPayload = this.cleanPayload(payload) as StartSessionPayload;
 
-    // 记录参数信息（用于 only_nlp_text 和 return_audio_url 跟踪）
+    // 记录参数信息（用于调试）
     this.logger.log(
       `StartSession Payload - action: ${cleanedPayload.action}, nlp_texts count: ${Array.isArray(cleanedPayload.nlp_texts) ? cleanedPayload.nlp_texts.length : 0}`,
+    );
+    this.logger.debug(
+      `StartSession speaker_info: ${JSON.stringify(cleanedPayload.speaker_info)}`,
+    );
+    this.logger.debug(
+      `StartSession use_head_music: ${cleanedPayload.use_head_music}, use_tail_music: ${cleanedPayload.use_tail_music}`,
     );
     if (cleanedPayload.input_info) {
       this.logger.debug(
