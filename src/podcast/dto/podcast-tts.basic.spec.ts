@@ -248,4 +248,38 @@ describe('Podcast DTOs - Basic Types', () => {
       expect(dto.callback_url).toBeDefined();
     });
   });
+
+  describe('CreatePodcastDto - debug_mode', () => {
+    it('should default debug_mode to false when not provided', () => {
+      const dto = {
+        action: ActionType.SUMMARIZE,
+        input_text: 'Test text',
+        callback_url: 'https://example.com/callback',
+      };
+
+      expect(dto.debug_mode).toBeUndefined();
+    });
+
+    it('should accept debug_mode as true', () => {
+      const dto = {
+        action: ActionType.SUMMARIZE,
+        input_text: 'Test text',
+        callback_url: 'https://example.com/callback',
+        debug_mode: true,
+      };
+
+      expect(dto.debug_mode).toBe(true);
+    });
+
+    it('should accept debug_mode as false', () => {
+      const dto = {
+        action: ActionType.SUMMARIZE,
+        input_text: 'Test text',
+        callback_url: 'https://example.com/callback',
+        debug_mode: false,
+      };
+
+      expect(dto.debug_mode).toBe(false);
+    });
+  });
 });

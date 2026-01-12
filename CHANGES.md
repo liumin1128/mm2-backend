@@ -1,13 +1,24 @@
 # 变更清单
 
+## 📋 最新更新（2026年1月12日）
+
+### 🆕 新增功能：Debug 模式
+- ✅ 新增 `debug_mode` 参数支持本地文件保存
+- ✅ 开发调试时可跳过 MinIO 上传，将文件保存到本地
+- ✅ 详细文档：[docs/DEBUG_MODE.md](docs/DEBUG_MODE.md)
+- ✅ 实现摘要：[docs/DEBUG_MODE_IMPLEMENTATION.md](docs/DEBUG_MODE_IMPLEMENTATION.md)
+
+---
+
 ## 📋 项目更新日期
 2026年1月12日
 
-## 🎯 实现功能
+## 🎯 已实现功能
 - ✅ 重试机制（最多 5 次，支持断点续传）
 - ✅ 字幕生成（SRT 格式）
 - ✅ 完整的测试套件
 - ✅ 详细的文档
+- ✅ **Debug 模式**（新增）
 
 ---
 

@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import WebSocket from 'ws';
 import { v4 as uuidv4 } from 'uuid';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   CreatePodcastDto,
   PodcastCallbackPayload,
@@ -51,6 +53,8 @@ interface TaskContext {
   currentSpeaker: string;
   // 使用量相关（与字幕无关的任务级元数据）
   usageInfo?: UsageInfo;
+  // 调试模式：true 时保存到本地而非 MinIO
+  debugMode: boolean;
 }
 
 /**
@@ -121,6 +125,8 @@ export class PodcastService {
       // 字幕
       subtitleManager: new SubtitleManager(),
       currentSpeaker: '',
+      // 调试模式
+      debugMode: dto.debug_mode || false,
     };
 
     this.tasks.set(taskId, taskContext);
@@ -500,6 +506,31 @@ export class PodcastService {
   }
 
   /**
+   * 保存文件到本地文件系统（debug 模式）
+   * @param relativePath 相对路径（例如：podcast/{inputId}/{taskId}/audio.mp3）
+   * @param buffer 文件数据
+   * @returns 本地文件路径
+   */
+  private saveFileLocally(relativePath: string, buffer: Buffer): string {
+    // 使用项目根目录下的 debug_output 文件夹
+    const outputDir = path.join(process.cwd(), 'debug_output');
+    const fullPath = path.join(outputDir, relativePath);
+    const dir = path.dirname(fullPath);
+
+    // 确保目录存在
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    // 写入文件
+    fs.writeFileSync(fullPath, buffer);
+    this.logger.log(`File saved locally: ${fullPath}`);
+
+    // 返回本地文件路径
+    return `file://${fullPath}`;
+  }
+
+  /**
    * 保存分轮音频
    * @param taskId 任务ID
    * @param task 任务上下文
@@ -514,6 +545,12 @@ export class PodcastService {
     speaker: string,
     audioChunks: Buffer[],
   ): Promise<void> {
+    // 跳过无效的 roundId
+    if (roundId < 0) {
+      this.logger.debug(`Skipping save for invalid round ${roundId}`);
+      return;
+    }
+
     if (audioChunks.length === 0) {
       this.logger.debug(`No audio data for round ${roundId}, skipping save`);
       return;
@@ -533,11 +570,18 @@ export class PodcastService {
       const contentType =
         contentTypeMap[task.audioFormat] || 'application/octet-stream';
 
-      const audioUrl = await this.minioService.uploadFile(
-        objectName,
-        roundAudioBuffer,
-        contentType,
-      );
+      let audioUrl: string;
+      if (task.debugMode) {
+        // Debug 模式：保存到本地
+        audioUrl = this.saveFileLocally(objectName, roundAudioBuffer);
+      } else {
+        // 正常模式：上传到 MinIO
+        audioUrl = await this.minioService.uploadFile(
+          objectName,
+          roundAudioBuffer,
+          contentType,
+        );
+      }
 
       task.roundAudios.push({
         roundId,
@@ -651,14 +695,22 @@ export class PodcastService {
         throw new Error('No audio data received');
       }
 
-      // 上传音频到 MinIO
-      const audioUrl = await this.minioService.uploadFile(
-        `podcast/${task.inputId}/${taskId}/audio.${task.audioFormat}`,
-        audioBuffer,
-        task.audioFormat === 'mp3' ? 'audio/mpeg' : 'audio/ogg',
-      );
+      // 上传音频到 MinIO 或保存到本地
+      let audioUrl: string;
+      const audioObjectName = `podcast/${task.inputId}/${taskId}/audio.${task.audioFormat}`;
+      if (task.debugMode) {
+        // Debug 模式：保存到本地
+        audioUrl = this.saveFileLocally(audioObjectName, audioBuffer);
+      } else {
+        // 正常模式：上传到 MinIO
+        audioUrl = await this.minioService.uploadFile(
+          audioObjectName,
+          audioBuffer,
+          task.audioFormat === 'mp3' ? 'audio/mpeg' : 'audio/ogg',
+        );
+      }
 
-      // 生成并上传字幕
+      // 生成并上传字幕或保存到本地
       let subtitleUrl: string | undefined;
       const subtitles = task.subtitleManager.getSubtitles();
       if (subtitles.length > 0) {
@@ -666,12 +718,21 @@ export class PodcastService {
         task.subtitleManager.distributeSubtitleTimes(task.totalDuration);
         const srtContent = generateSRT(subtitles);
         const srtBuffer = Buffer.from(srtContent, 'utf-8');
-        subtitleUrl = await this.minioService.uploadFile(
-          `podcast/${task.inputId}/${taskId}/subtitles.srt`,
-          srtBuffer,
-          'text/srt',
+        const subtitleObjectName = `podcast/${task.inputId}/${taskId}/subtitles.srt`;
+        if (task.debugMode) {
+          // Debug 模式：保存到本地
+          subtitleUrl = this.saveFileLocally(subtitleObjectName, srtBuffer);
+        } else {
+          // 正常模式：上传到 MinIO
+          subtitleUrl = await this.minioService.uploadFile(
+            subtitleObjectName,
+            srtBuffer,
+            'text/srt',
+          );
+        }
+        this.logger.log(
+          `Subtitle ${task.debugMode ? 'saved' : 'uploaded'}: ${subtitleUrl}`,
         );
-        this.logger.log(`Subtitle uploaded: ${subtitleUrl}`);
       }
 
       task.status = 'completed';

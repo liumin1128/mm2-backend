@@ -156,6 +156,10 @@ export class CreatePodcastDto {
 
   @IsUrl()
   callback_url: string;
+
+  @IsOptional()
+  @IsBoolean()
+  debug_mode?: boolean = false;
 }
 
 export interface UsageInfo {
