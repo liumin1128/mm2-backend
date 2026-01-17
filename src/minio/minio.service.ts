@@ -11,13 +11,33 @@ export class MinioService implements OnModuleInit {
   constructor(private readonly configService: ConfigService) {}
 
   async onModuleInit() {
-    const endPoint = this.configService.get<string>(
+    let endPoint = this.configService.get<string>(
       'MINIO_ENDPOINT',
       'localhost',
     );
-    const port = this.configService.get<number>('MINIO_PORT', 9000);
-    const useSSL =
+    let port = this.configService.get<number>('MINIO_PORT', 9000);
+    let useSSL =
       this.configService.get<string>('MINIO_USE_SSL', 'false') === 'true';
+
+    // 如果端点包含协议（http:// 或 https://），需要解析
+    if (endPoint.includes('://')) {
+      try {
+        const url = new URL(endPoint);
+        endPoint = url.hostname;
+        useSSL = url.protocol === 'https:';
+        if (url.port) {
+          port = parseInt(url.port, 10);
+        } else {
+          port = useSSL ? 443 : 80;
+        }
+      } catch (error) {
+        this.logger.error(
+          `Failed to parse MINIO_ENDPOINT: ${error instanceof Error ? error.message : error}`,
+        );
+        throw new Error(`Invalid MINIO_ENDPOINT format: ${endPoint}`);
+      }
+    }
+
     const accessKey = this.configService.get<string>(
       'MINIO_ACCESS_KEY',
       'minioadmin',
@@ -29,6 +49,10 @@ export class MinioService implements OnModuleInit {
     this.bucketName = this.configService.get<string>(
       'MINIO_BUCKET',
       'podcast-audio',
+    );
+
+    this.logger.log(
+      `Initializing MinIO client with endpoint: ${endPoint}:${port}, useSSL: ${useSSL}`,
     );
 
     this.client = new Minio.Client({
