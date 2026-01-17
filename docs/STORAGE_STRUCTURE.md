@@ -45,7 +45,7 @@ podcast-audio (MinIO bucket)
   1. TaskContext 接口添加 `inputId` 字段
   2. createPodcast 时初始化 inputId
   3. saveRoundAudio 路径更新为 `podcast/{inputId}/{taskId}/round_{roundId}`
-  4. uploadAudio 路径更新为 `podcast/{inputId}/{taskId}/audio`
+  4. uploadFile 路径更新为 `podcast/{inputId}/{taskId}/audio`
   5. 字幕上传路径更新为 `podcast/{inputId}/{taskId}/subtitles.srt`
 
 ## 测试方法

@@ -121,23 +121,6 @@ export class MinioService implements OnModuleInit {
   }
 
   /**
-   * 上传音频文件到 MinIO
-   * @param taskId 任务ID
-   * @param audioBuffer 音频二进制数据
-   * @param format 音频格式
-   * @returns 存储的 URL
-   */
-  async uploadAudio(
-    taskId: string,
-    audioBuffer: Buffer,
-    format: string = 'mp3',
-  ): Promise<string> {
-    const objectName = `podcast/${taskId}/audio.${format}`;
-    const contentType = this.getContentType(format);
-    return this.uploadFile(objectName, audioBuffer, contentType);
-  }
-
-  /**
    * 获取文件
    */
   async getFile(objectName: string): Promise<Buffer> {
