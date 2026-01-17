@@ -501,31 +501,6 @@ export class PodcastService {
   }
 
   /**
-   * 保存文件到本地文件系统（debug 模式）
-   * @param relativePath 相对路径（例如：podcast/{inputId}/{taskId}/audio.mp3）
-   * @param buffer 文件数据
-   * @returns 本地文件路径
-   */
-  private saveFileLocally(relativePath: string, buffer: Buffer): string {
-    // 使用项目根目录下的 debug_output 文件夹
-    const outputDir = path.join(process.cwd(), 'debug_output');
-    const fullPath = path.join(outputDir, relativePath);
-    const dir = path.dirname(fullPath);
-
-    // 确保目录存在
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
-    // 写入文件
-    fs.writeFileSync(fullPath, buffer);
-    this.logger.log(`File saved locally: ${fullPath}`);
-
-    // 返回本地文件路径
-    return `file://${fullPath}`;
-  }
-
-  /**
    * 保存分轮音频
    * @param taskId 任务ID
    * @param task 任务上下文
@@ -567,10 +542,8 @@ export class PodcastService {
 
       let audioUrl: string;
       if (task.debugMode) {
-        // Debug 模式：保存到本地
         audioUrl = this.saveFileLocally(objectName, roundAudioBuffer);
       } else {
-        // 正常模式：上传到 MinIO
         audioUrl = await this.minioService.uploadFile(
           objectName,
           roundAudioBuffer,
@@ -592,6 +565,31 @@ export class PodcastService {
         `Failed to save round ${roundId} audio: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  }
+
+  /**
+   * 保存文件到本地文件系统（debug 模式）
+   * @param relativePath 相对路径（例如：podcast/{inputId}/{taskId}/audio.mp3）
+   * @param buffer 文件数据
+   * @returns 本地文件路径
+   */
+  private saveFileLocally(relativePath: string, buffer: Buffer): string {
+    // 使用项目根目录下的 debug_output 文件夹
+    const outputDir = path.join(process.cwd(), 'debug_output');
+    const fullPath = path.join(outputDir, relativePath);
+    const dir = path.dirname(fullPath);
+
+    // 确保目录存在
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    // 写入文件
+    fs.writeFileSync(fullPath, buffer);
+    this.logger.log(`File saved locally: ${fullPath}`);
+
+    // 返回本地文件路径
+    return `file://${fullPath}`;
   }
 
   /**
@@ -691,7 +689,6 @@ export class PodcastService {
       }
 
       // 上传音频到 MinIO 或保存到本地
-      let audioUrl: string;
       const audioObjectName = `podcast/${task.inputId}/${taskId}/audio.${task.audioFormat}`;
       const contentTypeMap: Record<string, string> = {
         mp3: 'audio/mpeg',
@@ -702,11 +699,10 @@ export class PodcastService {
       };
       const audioContentType =
         contentTypeMap[task.audioFormat] || 'application/octet-stream';
+      let audioUrl: string;
       if (task.debugMode) {
-        // Debug 模式：保存到本地
         audioUrl = this.saveFileLocally(audioObjectName, audioBuffer);
       } else {
-        // 正常模式：上传到 MinIO
         audioUrl = await this.minioService.uploadFile(
           audioObjectName,
           audioBuffer,
@@ -725,14 +721,12 @@ export class PodcastService {
         const srtBuffer = Buffer.from(srtContent, 'utf-8');
         const subtitleObjectName = `podcast/${task.inputId}/${taskId}/subtitles.srt`;
         if (task.debugMode) {
-          // Debug 模式：保存到本地
           subtitleUrl = this.saveFileLocally(subtitleObjectName, srtBuffer);
         } else {
-          // 正常模式：上传到 MinIO
           subtitleUrl = await this.minioService.uploadFile(
             subtitleObjectName,
             srtBuffer,
-            'text/srt',
+            'application/x-subrip',
           );
         }
         this.logger.log(
