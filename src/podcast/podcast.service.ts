@@ -698,6 +698,15 @@ export class PodcastService {
       // 上传音频到 MinIO 或保存到本地
       let audioUrl: string;
       const audioObjectName = `podcast/${task.inputId}/${taskId}/audio.${task.audioFormat}`;
+      const contentTypeMap: Record<string, string> = {
+        mp3: 'audio/mpeg',
+        ogg_opus: 'audio/ogg',
+        pcm: 'audio/pcm',
+        aac: 'audio/aac',
+        wav: 'audio/wav',
+      };
+      const audioContentType =
+        contentTypeMap[task.audioFormat] || 'application/octet-stream';
       if (task.debugMode) {
         // Debug 模式：保存到本地
         audioUrl = this.saveFileLocally(audioObjectName, audioBuffer);
@@ -706,16 +715,17 @@ export class PodcastService {
         audioUrl = await this.minioService.uploadFile(
           audioObjectName,
           audioBuffer,
-          task.audioFormat === 'mp3' ? 'audio/mpeg' : 'audio/ogg',
+          audioContentType,
         );
       }
 
       // 生成并上传字幕或保存到本地
       let subtitleUrl: string | undefined;
-      const subtitles = task.subtitleManager.getSubtitles();
-      if (subtitles.length > 0) {
+      if (task.subtitleManager.getSubtitles().length > 0) {
         // 均匀分布字幕时间
         task.subtitleManager.distributeSubtitleTimes(task.totalDuration);
+        // 获取更新后的字幕列表
+        const subtitles = task.subtitleManager.getSubtitles();
         const srtContent = generateSRT(subtitles);
         const srtBuffer = Buffer.from(srtContent, 'utf-8');
         const subtitleObjectName = `podcast/${task.inputId}/${taskId}/subtitles.srt`;
