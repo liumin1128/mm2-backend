@@ -306,11 +306,6 @@ export class PodcastService {
     }
 
     const frame = PodcastProtocol.parseResponseFrame(data);
-    const eventName = frame.eventType
-      ? PodcastProtocol.getEventName(frame.eventType)
-      : 'Unknown';
-
-    this.logger.debug(`Received event: ${eventName} for task: ${taskId}`);
 
     // 检查错误帧
     if (frame.messageType === (MsgType.ERROR as number) || frame.errorCode) {
