@@ -759,7 +759,7 @@ export class PodcastService {
         status: 'success',
         audio_url: audioUrl,
         subtitle_url: subtitleUrl,
-        round_audios: task.roundAudios,
+        // round_audios: task.roundAudios,
         duration: task.totalDuration,
         // 添加详细的播客信息和使用量
         podcast_info: {
