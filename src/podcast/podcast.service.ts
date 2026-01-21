@@ -7,19 +7,22 @@ import * as path from 'path';
 import {
   CreatePodcastDto,
   PodcastCallbackPayload,
-  UsageInfo,
 } from './dto/podcast-tts.dto';
 import {
-  PodcastProtocol,
-  EventType,
   MsgType,
-  PodcastRoundStartPayload,
-  PodcastRoundEndPayload,
-  PodcastEndPayload,
+  EventType,
+  StartConnection,
+  StartSession,
+  FinishSession,
+  FinishConnection,
+  WaitForEvent,
+  ReceiveMessage,
+  messageToString,
 } from './podcast-protocol.util';
 import { MinioService } from '../minio/minio.service';
 import { CallbackService } from './callback.service';
-import { SubtitleManager, generateSRT } from './subtitle.util';
+
+const ENDPOINT = 'wss://openspeech.bytedance.com/api/v3/sami/podcasttts';
 
 interface RoundAudio {
   roundId: number;
@@ -27,67 +30,43 @@ interface RoundAudio {
   audioUrl: string;
 }
 
+/** 字幕条目 */
+interface SubtitleEntry {
+  index: number;
+  startTime: number; // 秒
+  endTime: number; // 秒
+  speaker: string;
+  text: string;
+}
+
 interface TaskContext {
   taskId: string;
-  inputId: string; // 用户提供的输入ID，用于文件路径
-  sessionId: string;
+  inputId: string;
   callbackUrl: string;
   audioFormat: string;
-  audioChunks: Buffer[];
-  roundAudioChunks: Buffer[]; // 当前轮的音频数据
-  roundAudios: RoundAudio[]; // 已保存的分轮音频
-  totalDuration: number;
-  currentRound: number;
+  debugMode: boolean;
+  // 状态追踪
   status: 'pending' | 'processing' | 'completed' | 'failed';
+  currentRound: number;
+  totalDuration: number;
   error?: string;
-  // 用于完整协议流程
-  connectionStarted: boolean;
-  sessionStarted: boolean;
-  // 重试机制相关
   retryCount: number;
   maxRetries: number;
   lastFinishedRoundId: number;
-  isPodcastRoundEnd: boolean;
-  // 字幕相关
-  subtitleManager: SubtitleManager;
-  currentSpeaker: string;
-  // 使用量相关（与字幕无关的任务级元数据）
-  usageInfo?: UsageInfo;
-  // 调试模式：true 时保存到本地而非 MinIO
-  debugMode: boolean;
-}
-
-/**
- * StartSession 请求 Payload 接口
- */
-interface StartSessionPayload extends Record<string, unknown> {
-  action: number;
-  input_id?: string;
-  input_text?: string;
-  prompt_text?: string;
-  nlp_texts?: unknown[];
-  input_info?: unknown;
-  audio_config?: unknown;
-  speaker_info?: unknown;
-  use_head_music?: boolean;
-  use_tail_music?: boolean;
-  aigc_watermark?: boolean;
-  aigc_metadata?: unknown;
-  retry_info?: {
-    retry_task_id: string;
-    last_finished_round_id: number;
-  };
+  // 音频和字幕数据
+  roundAudios: RoundAudio[];
+  speakers: Set<string>;
+  // 字幕数据
+  subtitles: SubtitleEntry[];
+  accumulatedDuration: number; // 累积时长（秒）
+  currentText: string; // 当前轮的文本
 }
 
 @Injectable()
 export class PodcastService {
   private readonly logger = new Logger(PodcastService.name);
-  private readonly wsUrl =
-    'wss://openspeech.bytedance.com/api/v3/sami/podcasttts';
   private readonly resourceId = 'volc.service_type.10050';
   private readonly appKey = 'aGjiRDfUWi';
-
-  // 存储正在处理的任务
   private tasks: Map<string, TaskContext> = new Map();
 
   constructor(
@@ -101,44 +80,41 @@ export class PodcastService {
    */
   createPodcast(dto: CreatePodcastDto): { task_id: string; message: string } {
     const taskId = uuidv4();
-    const sessionId = PodcastProtocol.generateSessionId();
 
     const taskContext: TaskContext = {
       taskId,
       inputId: dto.input_id || 'unknown',
-      sessionId,
       callbackUrl: dto.callback_url,
       audioFormat: dto.audio_config?.format || 'mp3',
-      audioChunks: [],
-      roundAudioChunks: [],
-      roundAudios: [],
-      totalDuration: 0,
-      currentRound: 0,
+      debugMode: dto.debug_mode || false,
+      // 状态追踪
       status: 'pending',
-      connectionStarted: false,
-      sessionStarted: false,
-      // 重试机制
+      currentRound: 0,
+      totalDuration: 0,
       retryCount: 0,
       maxRetries: 5,
       lastFinishedRoundId: -1,
-      isPodcastRoundEnd: true,
-      // 字幕
-      subtitleManager: new SubtitleManager(),
-      currentSpeaker: '',
-      // 调试模式
-      debugMode: dto.debug_mode || false,
+      // 音频和字幕数据
+      roundAudios: [],
+      speakers: new Set<string>(),
+      // 字幕数据
+      subtitles: [],
+      accumulatedDuration: 0,
+      currentText: '',
     };
 
     this.tasks.set(taskId, taskContext);
 
-    // 异步启动 WebSocket 连接和处理
-    void this.startPodcastGeneration(taskId, sessionId, dto).catch(
-      (error: unknown) => {
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(`Task ${taskId} failed: ${errMsg}`);
-        void this.handleTaskError(taskId, errMsg);
-      },
-    );
+    // 异步启动播客生成
+    void this.generatePodcast(taskId, dto).catch((error: unknown) => {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Task ${taskId} failed: ${errMsg}`);
+      void this.sendCallback(taskId, {
+        task_id: taskId,
+        status: 'failed',
+        error_message: errMsg,
+      });
+    });
 
     return {
       task_id: taskId,
@@ -147,11 +123,10 @@ export class PodcastService {
   }
 
   /**
-   * 启动播客生成（带重试机制）
+   * 生成播客主流程（参考 demo 实现）
    */
-  private async startPodcastGeneration(
+  private async generatePodcast(
     taskId: string,
-    sessionId: string,
     dto: CreatePodcastDto,
   ): Promise<void> {
     const task = this.tasks.get(taskId);
@@ -159,127 +134,423 @@ export class PodcastService {
       throw new Error('Task not found');
     }
 
-    while (task.retryCount < task.maxRetries) {
-      try {
-        await this.executeWebSocketSession(taskId, sessionId, dto);
-
-        // 如果成功完成（isPodcastRoundEnd 为 true），跳出重试循环
-        if (task.isPodcastRoundEnd && task.status === 'completed') {
-          return;
-        }
-
-        // 如果未完成但连接关闭，准备重试
-        if (!task.isPodcastRoundEnd) {
-          task.retryCount++;
-          this.logger.warn(
-            `Task ${taskId} incomplete, retrying (${task.retryCount}/${task.maxRetries})`,
-          );
-          await this.delay(1000); // 重试前等待1秒
-        } else {
-          return; // 正常完成
-        }
-      } catch (error) {
-        task.retryCount++;
-        const errMsg = error instanceof Error ? error.message : String(error);
-        this.logger.error(
-          `Task ${taskId} error, retry ${task.retryCount}/${task.maxRetries}: ${errMsg}`,
-        );
-
-        if (task.retryCount >= task.maxRetries) {
-          throw error;
-        }
-        await this.delay(1000);
-      }
-    }
-
-    throw new Error(`Task ${taskId} failed after ${task.maxRetries} retries`);
-  }
-
-  /**
-   * 执行单次 WebSocket 会话
-   */
-  private async executeWebSocketSession(
-    taskId: string,
-    sessionId: string,
-    dto: CreatePodcastDto,
-  ): Promise<void> {
     const appId = this.configService.get<string>('VOLC_APP_ID');
     const accessKey = this.configService.get<string>('VOLC_ACCESS_KEY');
 
     if (!appId || !accessKey) {
-      throw new Error(
-        'Missing VOLC_APP_ID or VOLC_ACCESS_KEY environment variables',
-      );
+      throw new Error('Missing VOLC_APP_ID or VOLC_ACCESS_KEY');
     }
 
-    return new Promise((resolve, reject) => {
-      const connectId = uuidv4();
-      const ws = new WebSocket(this.wsUrl, {
-        headers: {
+    let isPodcastRoundEnd = true;
+    let lastRoundID = -1;
+    let retryNum = 5;
+    const podcastAudio: Uint8Array[] = [];
+    let audio: Uint8Array[] = [];
+    let currentRound = 0;
+    let currentSpeaker = '';
+    let ws: WebSocket | null = null;
+
+    // 更新任务状态
+    task.status = 'processing';
+
+    try {
+      while (retryNum > 0) {
+        // 建立 WebSocket 连接
+        const headers = {
           'X-Api-App-Id': appId,
+          'X-Api-App-Key': this.appKey,
           'X-Api-Access-Key': accessKey,
           'X-Api-Resource-Id': this.resourceId,
-          'X-Api-App-Key': this.appKey,
-          'X-Api-Connect-Id': connectId,
-        },
-        // 重要：跳过 UTF8 验证，避免二进制音频数据导致连接异常
-        skipUTF8Validation: true,
-      });
+          'X-Api-Connect-Id': uuidv4(),
+        };
 
-      const task = this.tasks.get(taskId);
-      if (!task) {
-        reject(new Error('Task not found'));
-        return;
+        ws = new WebSocket(ENDPOINT, {
+          headers,
+          skipUTF8Validation: true,
+        });
+
+        await new Promise<void>((resolve, reject) => {
+          ws!.on('open', resolve);
+          ws!.on('error', reject);
+        });
+
+        this.logger.log(`WebSocket connected for task: ${taskId}`);
+
+        // 构建请求参数
+        const reqParams = this.buildRequestParams(
+          dto,
+          taskId,
+          isPodcastRoundEnd,
+          lastRoundID,
+        );
+
+        // Step 1: StartConnection
+        await StartConnection(ws);
+        await WaitForEvent(
+          ws,
+          MsgType.FULL_SERVER_RESPONSE,
+          EventType.CONNECTION_STARTED,
+        );
+        this.logger.debug(`Connection started for task: ${taskId}`);
+
+        const sessionId = uuidv4();
+
+        // Step 2: StartSession
+        await StartSession(
+          ws,
+          new TextEncoder().encode(JSON.stringify(reqParams)),
+          sessionId,
+        );
+        await WaitForEvent(
+          ws,
+          MsgType.FULL_SERVER_RESPONSE,
+          EventType.SESSION_STARTED,
+        );
+        this.logger.debug(`Session started for task: ${taskId}`);
+
+        // Step 3: FinishSession
+        await FinishSession(ws, sessionId);
+
+        // 消息接收循环
+        while (true) {
+          const msg = await ReceiveMessage(ws);
+          this.logger.debug(`Received: ${messageToString(msg)}`);
+
+          switch (msg.type) {
+            case MsgType.AUDIO_ONLY_SERVER:
+              if (msg.event === EventType.PODCAST_ROUND_RESPONSE) {
+                audio.push(msg.payload);
+                this.logger.debug(
+                  `Audio chunk received: ${msg.payload.length} bytes`,
+                );
+              }
+              break;
+
+            case MsgType.ERROR:
+              throw new Error(
+                `Server error: ${new TextDecoder().decode(msg.payload)}`,
+              );
+
+            case MsgType.FULL_SERVER_RESPONSE:
+              if (msg.event === EventType.PODCAST_ROUND_START) {
+                const data = JSON.parse(new TextDecoder().decode(msg.payload));
+                currentRound = data.round_id;
+                currentSpeaker = data.speaker || '';
+                isPodcastRoundEnd = false;
+                // 收集 speaker
+                if (currentSpeaker) {
+                  task.speakers.add(currentSpeaker);
+                }
+                // 保存当前轮的文本（用于字幕）
+                task.currentText = data.text || '';
+                task.currentRound = currentRound;
+                this.logger.log(
+                  `Round ${currentRound} started, speaker: ${currentSpeaker}`,
+                );
+              } else if (msg.event === EventType.PODCAST_ROUND_END) {
+                const data = JSON.parse(new TextDecoder().decode(msg.payload));
+                if (data.is_error) {
+                  this.logger.error(`Round error: ${JSON.stringify(data)}`);
+                  break;
+                }
+                isPodcastRoundEnd = true;
+                lastRoundID = currentRound;
+
+                // 获取本轮时长
+                const roundDuration = data.audio_duration || 0;
+
+                // 生成字幕条目（只为有文本的轮次创建）
+                if (task.currentText && roundDuration > 0) {
+                  task.subtitles.push({
+                    index: task.subtitles.length + 1,
+                    startTime: task.accumulatedDuration,
+                    endTime: task.accumulatedDuration + roundDuration,
+                    speaker: currentSpeaker,
+                    text: task.currentText,
+                  });
+                }
+
+                // 累积时长
+                task.accumulatedDuration += roundDuration;
+                task.totalDuration = task.accumulatedDuration;
+
+                // 保存分轮音频
+                if (audio.length > 0) {
+                  const roundAudioBuffer = Buffer.concat(audio);
+                  const roundAudioUrl = await this.saveRoundAudio(
+                    task,
+                    currentRound,
+                    currentSpeaker,
+                    roundAudioBuffer,
+                  );
+                  if (roundAudioUrl) {
+                    task.roundAudios.push({
+                      roundId: currentRound,
+                      speaker: currentSpeaker,
+                      audioUrl: roundAudioUrl,
+                    });
+                  }
+                  podcastAudio.push(...audio);
+                  audio = [];
+                }
+                task.lastFinishedRoundId = currentRound;
+                this.logger.log(`Round ${currentRound} finished`);
+              } else if (msg.event === EventType.PODCAST_END) {
+                const data = JSON.parse(new TextDecoder().decode(msg.payload));
+                this.logger.log(`Podcast end: ${JSON.stringify(data)}`);
+              }
+              break;
+          }
+
+          if (msg.event === EventType.SESSION_FINISHED) {
+            break;
+          }
+        }
+
+        // Step 4: FinishConnection
+        await FinishConnection(ws);
+        await WaitForEvent(
+          ws,
+          MsgType.FULL_SERVER_RESPONSE,
+          EventType.CONNECTION_FINISHED,
+        );
+
+        // 检查是否完成
+        if (isPodcastRoundEnd) {
+          if (podcastAudio.length > 0) {
+            await this.saveFinalAudio(taskId, podcastAudio, task);
+          }
+          break;
+        } else {
+          this.logger.warn(
+            `Podcast not finished, retrying from round ${lastRoundID}`,
+          );
+          retryNum--;
+          await this.delay(1000);
+        }
       }
 
-      ws.on('open', () => {
-        this.logger.log(`WebSocket connected for task: ${taskId}`);
-        task.status = 'processing';
+      if (!isPodcastRoundEnd) {
+        throw new Error(`Podcast generation failed after retries`);
+      }
+    } finally {
+      if (ws) {
+        ws.close();
+      }
+      this.tasks.delete(taskId);
+    }
+  }
 
-        // 第一步: 发送 StartConnection
-        const startConnFrame = PodcastProtocol.buildStartConnectionFrame();
-        ws.send(startConnFrame);
-        this.logger.debug(`StartConnection sent for task: ${taskId}`);
-      });
+  /**
+   * 构建请求参数
+   */
+  private buildRequestParams(
+    dto: CreatePodcastDto,
+    taskId: string,
+    isPodcastRoundEnd: boolean,
+    lastRoundID: number,
+  ): Record<string, unknown> {
+    const reqParams: Record<string, unknown> = {
+      input_id: dto.input_id || taskId,
+      input_text: dto.input_text || '',
+      prompt_text: dto.prompt_text || '',
+      action: dto.action,
+      speaker_info: dto.speaker_info || { random_order: false },
+      nlp_texts: dto.nlp_texts || [],
+      use_head_music: dto.use_head_music ?? false,
+      use_tail_music: dto.use_tail_music ?? false,
+      input_info: {
+        input_url: dto.input_info?.input_url || '',
+        return_audio_url: dto.input_info?.return_audio_url ?? false,
+        only_nlp_text: dto.input_info?.only_nlp_text ?? false,
+      },
+      audio_config: {
+        format: dto.audio_config?.format || 'mp3',
+        sample_rate: dto.audio_config?.sample_rate || 24000,
+        speech_rate: dto.audio_config?.speech_rate || 0,
+      },
+    };
 
-      ws.on('message', (data: Buffer) => {
-        this.handleMessage(taskId, sessionId, ws, data, dto).catch(
-          (error: unknown) => {
-            this.logger.error(
-              `Error handling message for task ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          },
+    // 重试时添加重试信息
+    if (!isPodcastRoundEnd) {
+      reqParams.retry_info = {
+        retry_task_id: taskId,
+        last_finished_round_id: lastRoundID,
+      };
+    }
+
+    return reqParams;
+  }
+
+  /**
+   * 保存分轮音频
+   */
+  private async saveRoundAudio(
+    task: TaskContext,
+    roundId: number,
+    speaker: string,
+    audioBuffer: Buffer,
+  ): Promise<string | null> {
+    try {
+      const filename = `round_${roundId}.${task.audioFormat}`;
+
+      if (task.debugMode) {
+        const outputDir = path.join(
+          process.cwd(),
+          'debug_output',
+          'podcast',
+          task.inputId,
+          task.taskId,
         );
-      });
-
-      ws.on('error', (error: Error) => {
-        this.logger.error(
-          `WebSocket error for task ${taskId}: ${error.message}`,
-        );
-        // 打印完整错误堆栈用于调试
-        this.logger.error(`WebSocket error stack: ${error.stack}`);
-        reject(error);
-      });
-
-      ws.on('close', (code, reason) => {
-        const reasonStr = reason.toString() || 'No reason provided';
-        this.logger.log(
-          `WebSocket closed for task ${taskId}: code=${code}, reason=${reasonStr}`,
-        );
-        // 根据关闭码判断是否为异常关闭
-        // 1000: 正常关闭, 1001: 离开, 1006: 异常关闭(无close frame)
-        if (code === 1006) {
-          this.logger.warn(
-            `Task ${taskId}: Abnormal closure (1006) - 可能是认证失败、协议错误或网络问题`,
-          );
-        } else if (code === 1002) {
-          this.logger.warn(
-            `Task ${taskId}: Protocol error (1002) - 消息格式可能不正确`,
-          );
+        if (!fs.existsSync(outputDir)) {
+          fs.mkdirSync(outputDir, { recursive: true });
         }
-        resolve();
-      });
-    });
+        const filepath = path.join(outputDir, filename);
+        await fs.promises.writeFile(filepath, audioBuffer);
+        return filepath;
+      } else {
+        const objectPath = `podcast/${task.inputId}/${task.taskId}/${filename}`;
+        return await this.minioService.uploadFile(
+          objectPath,
+          audioBuffer,
+          `audio/${task.audioFormat}`,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to save round ${roundId} audio: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * 保存最终音频
+   */
+  private async saveFinalAudio(
+    taskId: string,
+    podcastAudio: Uint8Array[],
+    task: TaskContext,
+  ): Promise<void> {
+    const audioBuffer = Buffer.concat(podcastAudio);
+    const audioFilename = `audio.${task.audioFormat}`;
+    const subtitleFilename = 'subtitles.srt';
+
+    // 生成字幕文件
+    const srtContent = this.generateSRT(task.subtitles);
+    const srtBuffer = Buffer.from(srtContent, 'utf-8');
+
+    let audioUrl: string;
+    let subtitleUrl: string | undefined;
+
+    if (task.debugMode) {
+      // 调试模式：保存到本地
+      const outputDir = path.join(
+        process.cwd(),
+        'debug_output',
+        'podcast',
+        task.inputId,
+        taskId,
+      );
+      if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+      }
+
+      // 保存音频
+      const audioPath = path.join(outputDir, audioFilename);
+      await fs.promises.writeFile(audioPath, audioBuffer);
+      audioUrl = audioPath;
+      this.logger.log(`Debug: Audio saved to ${audioPath}`);
+
+      // 保存字幕
+      if (task.subtitles.length > 0) {
+        const subtitlePath = path.join(outputDir, subtitleFilename);
+        await fs.promises.writeFile(subtitlePath, srtBuffer);
+        subtitleUrl = subtitlePath;
+        this.logger.log(`Debug: Subtitle saved to ${subtitlePath}`);
+      }
+    } else {
+      // 正常模式：上传到 MinIO
+      const audioObjectPath = `podcast/${task.inputId}/${taskId}/${audioFilename}`;
+      audioUrl = await this.minioService.uploadFile(
+        audioObjectPath,
+        audioBuffer,
+        `audio/${task.audioFormat}`,
+      );
+      this.logger.log(`Audio uploaded: ${audioUrl}`);
+
+      // 上传字幕
+      if (task.subtitles.length > 0) {
+        const subtitleObjectPath = `podcast/${task.inputId}/${taskId}/${subtitleFilename}`;
+        subtitleUrl = await this.minioService.uploadFile(
+          subtitleObjectPath,
+          srtBuffer,
+          'application/x-subrip',
+        );
+        this.logger.log(`Subtitle uploaded: ${subtitleUrl}`);
+      }
+    }
+
+    task.status = 'completed';
+
+    // 构建回调 payload
+    const callbackPayload: PodcastCallbackPayload = {
+      task_id: taskId,
+      status: 'success',
+      audio_url: audioUrl,
+      subtitle_url: subtitleUrl,
+      round_audios: task.roundAudios,
+      duration: task.totalDuration,
+      podcast_info: {
+        totalDuration: task.totalDuration,
+        totalRounds: task.roundAudios.length,
+        speakers: Array.from(task.speakers),
+      },
+    };
+
+    await this.sendCallback(taskId, callbackPayload);
+  }
+
+  /**
+   * 生成 SRT 格式字幕
+   */
+  private generateSRT(subtitles: SubtitleEntry[]): string {
+    return subtitles
+      .map((entry) => {
+        const startTime = this.formatSRTTime(entry.startTime);
+        const endTime = this.formatSRTTime(entry.endTime);
+        // 格式: [说话人]: 文本
+        const text = entry.speaker
+          ? `[${entry.speaker}]: ${entry.text}`
+          : entry.text;
+        return `${entry.index}\n${startTime} --> ${endTime}\n${text}\n`;
+      })
+      .join('\n');
+  }
+
+  /**
+   * 格式化时间为 SRT 时间格式 (HH:MM:SS,mmm)
+   */
+  private formatSRTTime(seconds: number): string {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    const millis = Math.round((seconds % 1) * 1000);
+
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')},${millis.toString().padStart(3, '0')}`;
+  }
+
+  /**
+   * 发送回调
+   */
+  private async sendCallback(
+    taskId: string,
+    payload: PodcastCallbackPayload,
+  ): Promise<void> {
+    const task = this.tasks.get(taskId);
+    if (task?.callbackUrl) {
+      await this.callbackService.notifyWithRetry(task.callbackUrl, payload);
+    }
   }
 
   /**
@@ -287,525 +558,6 @@ export class PodcastService {
    */
   private delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  /**
-   * 处理 WebSocket 消息
-   */
-  private async handleMessage(
-    taskId: string,
-    sessionId: string,
-    ws: WebSocket,
-    data: Buffer,
-    dto: CreatePodcastDto,
-  ): Promise<void> {
-    const task = this.tasks.get(taskId);
-    if (!task) {
-      this.logger.warn(`Task not found: ${taskId}`);
-      return;
-    }
-
-    const frame = PodcastProtocol.parseResponseFrame(data);
-
-    // 检查错误帧
-    if (frame.messageType === (MsgType.ERROR as number) || frame.errorCode) {
-      // 解析详细错误信息
-      let errorDetail = '';
-      if (frame.payload) {
-        if (Buffer.isBuffer(frame.payload)) {
-          errorDetail = frame.payload.toString('utf-8');
-        } else if (typeof frame.payload === 'object') {
-          errorDetail = JSON.stringify(frame.payload);
-        }
-      }
-      const errorMsg = `Error code: ${frame.errorCode || 'unknown'}, msgType: ${frame.messageType}, detail: ${errorDetail}`;
-      this.logger.error(`[Task ${taskId}] Error frame received - ${errorMsg}`);
-      this.logger.error(
-        `[Task ${taskId}] 可能原因: 1)认证失败 2)协议顺序错误(Round error) 3)参数格式不正确`,
-      );
-      void this.handleTaskError(taskId, errorMsg);
-      ws.close();
-      return;
-    }
-
-    switch (frame.eventType) {
-      case EventType.CONNECTION_STARTED: {
-        this.logger.log(`Connection started for task: ${taskId}`);
-        task.connectionStarted = true;
-        // 第二步: 发送 StartSession
-        const payload = this.buildPayload(dto, task);
-        const startSessionFrame = PodcastProtocol.buildStartSessionFrame(
-          sessionId,
-          payload,
-        );
-        ws.send(startSessionFrame);
-        this.logger.debug(`StartSession sent for task: ${taskId}`);
-        break;
-      }
-
-      case EventType.SESSION_STARTED: {
-        this.logger.log(`Session started for task: ${taskId}`);
-        task.sessionStarted = true;
-        // 第三步: 发送 FinishSession（告知服务端可以开始处理）
-        const finishSessionFrame =
-          PodcastProtocol.buildFinishSessionFrame(sessionId);
-        ws.send(finishSessionFrame);
-        this.logger.debug(`FinishSession sent for task: ${taskId}`);
-        break;
-      }
-
-      case EventType.PODCAST_ROUND_START: {
-        const roundStartPayload =
-          frame.payload as unknown as PodcastRoundStartPayload;
-        task.currentRound = roundStartPayload?.round_id ?? task.currentRound;
-        task.isPodcastRoundEnd = false;
-        task.currentSpeaker = String(
-          roundStartPayload?.speaker || roundStartPayload?.round_type || '',
-        );
-        // 保存当前 Round 的文本（用于错误诊断）
-        (task as TaskContext & { currentRoundText?: string }).currentRoundText =
-          roundStartPayload?.text || '';
-
-        // 重置当前轮的音频数据（确保每轮音频独立）
-        task.roundAudioChunks = [];
-
-        // 添加字幕条目（只为有文本的轮次创建）
-        if (roundStartPayload?.text) {
-          task.subtitleManager.addSubtitleEntry(
-            task.currentSpeaker,
-            roundStartPayload.text,
-            task.currentRound,
-          );
-        }
-
-        // 记录 Round 开始信息（包含文本预览，用于调试 TTS 失败）
-        const textPreview = roundStartPayload?.text
-          ? roundStartPayload.text.substring(0, 50) +
-            (roundStartPayload.text.length > 50 ? '...' : '')
-          : '[无文本]';
-        this.logger.debug(
-          `Round ${task.currentRound} started, speaker: ${task.currentSpeaker}, text: ${textPreview}`,
-        );
-        break;
-      }
-
-      case EventType.PODCAST_ROUND_RESPONSE:
-        // 音频数据
-        if (Buffer.isBuffer(frame.payload)) {
-          task.audioChunks.push(frame.payload);
-          task.roundAudioChunks.push(frame.payload);
-        }
-        break;
-
-      case EventType.PODCAST_ROUND_END: {
-        const roundEndPayload =
-          frame.payload as unknown as PodcastRoundEndPayload;
-
-        // 捕获当前轮次信息（避免异步竞态问题）
-        const currentRoundId = task.currentRound;
-        const currentSpeaker = task.currentSpeaker;
-        const currentAudioChunks = [...task.roundAudioChunks]; // 复制数组
-
-        // 立即清空当前轮音频数据（在下一轮开始前）
-        task.roundAudioChunks = [];
-
-        if (roundEndPayload?.is_error) {
-          // 获取当前 Round 的文本用于诊断
-          const currentText =
-            (task as TaskContext & { currentRoundText?: string })
-              .currentRoundText || '';
-          const textLen = currentText.length;
-          const textPreview =
-            currentText.substring(0, 100) + (textLen > 100 ? '...' : '');
-          this.logger.error(
-            `[Round ${currentRoundId}] TTS Error: ${roundEndPayload.error_msg}`,
-          );
-          this.logger.error(
-            `[Round ${currentRoundId}] Speaker: ${currentSpeaker}, TextLen: ${textLen}, Text: ${textPreview}`,
-          );
-        } else {
-          // 处理音频时长
-          if (roundEndPayload?.audio_duration) {
-            task.totalDuration += roundEndPayload.audio_duration;
-            // 更新字幕时间戳
-            task.subtitleManager.updateSubtitleEndTime(
-              currentRoundId,
-              roundEndPayload.audio_duration,
-            );
-            this.logger.debug(
-              `Round ${currentRoundId} ended, duration: ${roundEndPayload.audio_duration}s`,
-            );
-          }
-
-          // 只要有音频数据就保存分轮音频（即使没有 audio_duration）
-          if (currentAudioChunks.length > 0) {
-            await this.saveRoundAudio(
-              taskId,
-              task,
-              currentRoundId,
-              currentSpeaker,
-              currentAudioChunks,
-            );
-          }
-        }
-        // 更新重试相关状态
-        task.isPodcastRoundEnd = true;
-        task.lastFinishedRoundId = currentRoundId;
-        break;
-      }
-
-      case EventType.PODCAST_END: {
-        const podcastEndPayload = frame.payload as unknown as PodcastEndPayload;
-        this.logger.log(`Podcast generation completed for task: ${taskId}`);
-        if (podcastEndPayload?.meta_info?.audio_url) {
-          this.logger.debug(
-            `Audio URL from server: ${podcastEndPayload.meta_info.audio_url}`,
-          );
-        }
-        break;
-      }
-
-      case EventType.SESSION_FINISHED: {
-        this.logger.log(`Session finished for task: ${taskId}`);
-        // 第四步: 发送 FinishConnection
-        const finishConnFrame = PodcastProtocol.buildFinishConnectionFrame();
-        ws.send(finishConnFrame);
-        this.logger.debug(`FinishConnection sent for task: ${taskId}`);
-        break;
-      }
-
-      case EventType.CONNECTION_FINISHED:
-        this.logger.log(`Connection finished for task: ${taskId}`);
-        // 完成处理
-        await this.handleTaskCompletion(taskId);
-        ws.close();
-        break;
-
-      case EventType.USAGE_RESPONSE: {
-        const usagePayload = frame.payload as {
-          usage?: { inputTextTokens: number; outputAudioTokens: number };
-        };
-        if (usagePayload?.usage) {
-          // 存储 usage 信息到任务上下文（与字幕无关）
-          task.usageInfo = usagePayload.usage;
-          this.logger.debug(
-            `Usage info received: input_tokens=${task.usageInfo.inputTextTokens}, output_tokens=${task.usageInfo.outputAudioTokens}`,
-          );
-        }
-        break;
-      }
-
-      default:
-        this.logger.debug(`Unhandled event type: ${frame.eventType}`);
-    }
-  }
-
-  /**
-   * 保存分轮音频
-   * @param taskId 任务ID
-   * @param task 任务上下文
-   * @param roundId 轮次ID（传入以避免异步竞态）
-   * @param speaker 说话人（传入以避免异步竞态）
-   * @param audioChunks 音频数据块（传入以避免异步竞态）
-   */
-  private async saveRoundAudio(
-    taskId: string,
-    task: TaskContext,
-    roundId: number,
-    speaker: string,
-    audioChunks: Buffer[],
-  ): Promise<void> {
-    // 跳过无效的 roundId
-    if (roundId < 0) {
-      this.logger.debug(`Skipping save for invalid round ${roundId}`);
-      return;
-    }
-
-    if (audioChunks.length === 0) {
-      this.logger.debug(`No audio data for round ${roundId}, skipping save`);
-      return;
-    }
-
-    try {
-      const roundAudioBuffer = Buffer.concat(audioChunks);
-      const objectName = `podcast/${task.inputId}/${taskId}/round_${roundId}.${task.audioFormat}`;
-      // 获取内容类型
-      const contentTypeMap: Record<string, string> = {
-        mp3: 'audio/mpeg',
-        ogg_opus: 'audio/ogg',
-        pcm: 'audio/pcm',
-        aac: 'audio/aac',
-        wav: 'audio/wav',
-      };
-      const contentType =
-        contentTypeMap[task.audioFormat] || 'application/octet-stream';
-
-      let audioUrl: string;
-      if (task.debugMode) {
-        audioUrl = this.saveFileLocally(objectName, roundAudioBuffer);
-      } else {
-        audioUrl = await this.minioService.uploadFile(
-          objectName,
-          roundAudioBuffer,
-          contentType,
-        );
-      }
-
-      task.roundAudios.push({
-        roundId,
-        speaker,
-        audioUrl,
-      });
-
-      this.logger.log(
-        `Round ${roundId} audio saved: ${objectName}, speaker: ${speaker}`,
-      );
-    } catch (error) {
-      this.logger.error(
-        `Failed to save round ${roundId} audio: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
-
-  /**
-   * 保存文件到本地文件系统（debug 模式）
-   * @param relativePath 相对路径（例如：podcast/{inputId}/{taskId}/audio.mp3）
-   * @param buffer 文件数据
-   * @returns 本地文件路径
-   */
-  private saveFileLocally(relativePath: string, buffer: Buffer): string {
-    // 使用项目根目录下的 debug_output 文件夹
-    const outputDir = path.join(process.cwd(), 'debug_output');
-    const fullPath = path.join(outputDir, relativePath);
-    const dir = path.dirname(fullPath);
-
-    // 确保目录存在
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
-    // 写入文件
-    fs.writeFileSync(fullPath, buffer);
-    this.logger.log(`File saved locally: ${fullPath}`);
-
-    // 返回本地文件路径
-    return `file://${fullPath}`;
-  }
-
-  /**
-   * 清理对象中的 undefined 值
-   */
-  private cleanPayload(obj: Record<string, unknown>): Record<string, unknown> {
-    return Object.fromEntries(
-      Object.entries(obj).filter(([, value]) => value !== undefined),
-    );
-  }
-
-  /**
-   * 构建请求 payload
-   */
-  private buildPayload(
-    dto: CreatePodcastDto,
-    task?: TaskContext,
-  ): StartSessionPayload {
-    const payload: StartSessionPayload = {
-      action: dto.action,
-      input_id: dto.input_id,
-      input_text: dto.input_text,
-      prompt_text: dto.prompt_text,
-      nlp_texts: dto.nlp_texts,
-      input_info: dto.input_info,
-      audio_config: dto.audio_config,
-      speaker_info: dto.speaker_info,
-      use_head_music: dto.use_head_music,
-      use_tail_music: dto.use_tail_music,
-      aigc_watermark: dto.aigc_watermark,
-      aigc_metadata: dto.aigc_metadata,
-    };
-
-    // 添加重试信息（断点续传）
-    if (task && !task.isPodcastRoundEnd && task.lastFinishedRoundId >= 0) {
-      payload.retry_info = {
-        retry_task_id: task.taskId,
-        last_finished_round_id: task.lastFinishedRoundId,
-      };
-      this.logger.debug(
-        `Adding retry_info: task=${task.taskId}, lastRound=${task.lastFinishedRoundId}`,
-      );
-    }
-
-    // 清理 undefined 字段
-    const cleanedPayload = this.cleanPayload(payload) as StartSessionPayload;
-
-    // 记录参数信息（用于调试）
-    this.logger.log(
-      `StartSession Payload - action: ${cleanedPayload.action}, nlp_texts count: ${Array.isArray(cleanedPayload.nlp_texts) ? cleanedPayload.nlp_texts.length : 0}`,
-    );
-    this.logger.debug(
-      `StartSession speaker_info: ${JSON.stringify(cleanedPayload.speaker_info)}`,
-    );
-    this.logger.debug(
-      `StartSession use_head_music: ${cleanedPayload.use_head_music}, use_tail_music: ${cleanedPayload.use_tail_music}`,
-    );
-    if (cleanedPayload.input_info) {
-      this.logger.debug(
-        `Payload nlp_texts: ${JSON.stringify(cleanedPayload.nlp_texts)}`,
-      );
-      const inputInfo = cleanedPayload.input_info as Record<string, unknown>;
-      if (inputInfo.only_nlp_text) {
-        this.logger.debug(
-          `[Task ${task?.taskId}] only_nlp_text enabled: will extract NLP texts without audio`,
-        );
-      }
-      if (inputInfo.return_audio_url) {
-        this.logger.debug(
-          `[Task ${task?.taskId}] return_audio_url enabled: server will return audio URL`,
-        );
-      }
-    }
-
-    return cleanedPayload;
-  }
-
-  /**
-   * 处理任务完成
-   */
-  private async handleTaskCompletion(taskId: string): Promise<void> {
-    const task = this.tasks.get(taskId);
-    if (!task) {
-      this.logger.warn(`Task not found for completion: ${taskId}`);
-      return;
-    }
-
-    try {
-      // 合并音频数据
-      const audioBuffer = Buffer.concat(task.audioChunks);
-      this.logger.log(
-        `Audio data collected: ${audioBuffer.length} bytes, duration: ${task.totalDuration}s`,
-      );
-
-      if (audioBuffer.length === 0) {
-        throw new Error('No audio data received');
-      }
-
-      // 上传音频到 MinIO 或保存到本地
-      const audioObjectName = `podcast/${task.inputId}/${taskId}/audio.${task.audioFormat}`;
-      const contentTypeMap: Record<string, string> = {
-        mp3: 'audio/mpeg',
-        ogg_opus: 'audio/ogg',
-        pcm: 'audio/pcm',
-        aac: 'audio/aac',
-        wav: 'audio/wav',
-      };
-      const audioContentType =
-        contentTypeMap[task.audioFormat] || 'application/octet-stream';
-      let audioUrl: string;
-      if (task.debugMode) {
-        audioUrl = this.saveFileLocally(audioObjectName, audioBuffer);
-      } else {
-        audioUrl = await this.minioService.uploadFile(
-          audioObjectName,
-          audioBuffer,
-          audioContentType,
-        );
-      }
-
-      // 生成并上传字幕或保存到本地
-      let subtitleUrl: string | undefined;
-      if (task.subtitleManager.getSubtitles().length > 0) {
-        // 均匀分布字幕时间
-        task.subtitleManager.distributeSubtitleTimes(task.totalDuration);
-        // 获取更新后的字幕列表
-        const subtitles = task.subtitleManager.getSubtitles();
-        const srtContent = generateSRT(subtitles);
-        const srtBuffer = Buffer.from(srtContent, 'utf-8');
-        const subtitleObjectName = `podcast/${task.inputId}/${taskId}/subtitles.srt`;
-        if (task.debugMode) {
-          subtitleUrl = this.saveFileLocally(subtitleObjectName, srtBuffer);
-        } else {
-          subtitleUrl = await this.minioService.uploadFile(
-            subtitleObjectName,
-            srtBuffer,
-            'application/x-subrip',
-          );
-        }
-        this.logger.log(
-          `Subtitle ${task.debugMode ? 'saved' : 'uploaded'}: ${subtitleUrl}`,
-        );
-      }
-
-      task.status = 'completed';
-      task.isPodcastRoundEnd = true;
-
-      // 获取播客详细信息
-      const podcastInfo = task.subtitleManager.getPodcastInfo();
-      // 使用任务上下文中存储的 usage 信息（而非字幕管理器中的）
-      const usageInfo = task.usageInfo;
-
-      // 触发回调
-      const callbackPayload: PodcastCallbackPayload = {
-        task_id: taskId,
-        status: 'success',
-        audio_url: audioUrl,
-        subtitle_url: subtitleUrl,
-        // round_audios: task.roundAudios,
-        duration: task.totalDuration,
-        // 添加详细的播客信息和使用量
-        podcast_info: {
-          totalDuration: podcastInfo.totalDuration,
-          totalRounds: podcastInfo.totalRounds,
-          speakers: podcastInfo.speakers,
-          usage: usageInfo,
-        },
-        usage: usageInfo,
-      };
-
-      await this.callbackService.notifyWithRetry(
-        task.callbackUrl,
-        callbackPayload,
-      );
-
-      this.logger.log(
-        `Task ${taskId} completed successfully, usage: input_tokens=${usageInfo?.inputTextTokens || 0}, output_tokens=${usageInfo?.outputAudioTokens || 0}`,
-      );
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Task completion error: ${errMsg}`);
-      void this.handleTaskError(taskId, errMsg);
-    } finally {
-      // 清理任务（延迟清理，以便查询状态）
-      setTimeout(() => {
-        this.tasks.delete(taskId);
-      }, 60000); // 1分钟后清理
-    }
-  }
-
-  /**
-   * 处理任务错误
-   */
-  private async handleTaskError(
-    taskId: string,
-    errorMessage: string,
-  ): Promise<void> {
-    const task = this.tasks.get(taskId);
-    if (!task) {
-      return;
-    }
-
-    task.status = 'failed';
-    task.error = errorMessage;
-
-    // 触发回调
-    const callbackPayload: PodcastCallbackPayload = {
-      task_id: taskId,
-      status: 'failed',
-      error_message: errorMessage,
-    };
-
-    await this.callbackService.notifyWithRetry(
-      task.callbackUrl,
-      callbackPayload,
-    );
   }
 
   /**

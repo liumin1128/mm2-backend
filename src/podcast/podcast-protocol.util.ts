@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import * as zlib from 'zlib';
+import WebSocket from 'ws';
 
 /**
  * 火山引擎播客TTS WebSocket二进制协议工具类
@@ -624,3 +625,237 @@ export class PodcastProtocol {
     return EventType[eventType] || `Unknown(${eventType})`;
   }
 }
+
+// ============= WebSocket 消息收发辅助函数 =============
+
+const messageQueues = new Map<WebSocket, Message[]>();
+const messageCallbacks = new Map<WebSocket, ((msg: Message) => void)[]>();
+
+function setupMessageHandler(ws: WebSocket) {
+  if (!messageQueues.has(ws)) {
+    messageQueues.set(ws, []);
+    messageCallbacks.set(ws, []);
+
+    ws.on('message', (data: WebSocket.RawData) => {
+      try {
+        let uint8Data: Uint8Array;
+        if (Buffer.isBuffer(data)) {
+          uint8Data = new Uint8Array(data);
+        } else if (data instanceof ArrayBuffer) {
+          uint8Data = new Uint8Array(data);
+        } else if (data instanceof Uint8Array) {
+          uint8Data = data;
+        } else {
+          throw new Error(`Unexpected WebSocket message type: ${typeof data}`);
+        }
+
+        const msg = unmarshalMessage(uint8Data);
+        const queue = messageQueues.get(ws)!;
+        const callbacks = messageCallbacks.get(ws)!;
+
+        if (callbacks.length > 0) {
+          const callback = callbacks.shift()!;
+          callback(msg);
+        } else {
+          queue.push(msg);
+        }
+      } catch (error) {
+        console.error(`Error processing message: ${error}`);
+      }
+    });
+
+    ws.on('close', () => {
+      messageQueues.delete(ws);
+      messageCallbacks.delete(ws);
+    });
+  }
+}
+
+/**
+ * 接收 WebSocket 消息
+ */
+export async function ReceiveMessage(ws: WebSocket): Promise<Message> {
+  setupMessageHandler(ws);
+
+  return new Promise((resolve, reject) => {
+    const queue = messageQueues.get(ws)!;
+    const callbacks = messageCallbacks.get(ws)!;
+
+    if (queue.length > 0) {
+      resolve(queue.shift()!);
+      return;
+    }
+
+    const errorHandler = (error: WebSocket.ErrorEvent) => {
+      const index = callbacks.findIndex((cb) => cb === resolver);
+      if (index !== -1) {
+        callbacks.splice(index, 1);
+      }
+      reject(error);
+    };
+
+    const resolver = (msg: Message) => {
+      ws.removeListener('error', errorHandler);
+      resolve(msg);
+    };
+
+    callbacks.push(resolver);
+    ws.once('error', errorHandler);
+  });
+}
+
+/**
+ * 等待指定事件
+ */
+export async function WaitForEvent(
+  ws: WebSocket,
+  msgType: MsgType,
+  eventType: EventType,
+): Promise<Message> {
+  const msg = await ReceiveMessage(ws);
+  if (msg.type !== msgType || msg.event !== eventType) {
+    throw new Error(
+      `Unexpected message: type=${getMsgTypeName(msg.type)}, event=${getEventTypeName(msg.event || 0)}`,
+    );
+  }
+  return msg;
+}
+
+/**
+ * 发送 StartConnection
+ */
+export async function StartConnection(ws: WebSocket): Promise<void> {
+  const msg = createMessage(
+    MsgType.FULL_CLIENT_REQUEST,
+    MsgTypeFlagBits.WITH_EVENT,
+  );
+  msg.event = EventType.START_CONNECTION;
+  msg.payload = new TextEncoder().encode('{}');
+  const data = marshalMessage(msg);
+  return new Promise((resolve, reject) => {
+    ws.send(data, (error?: Error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+/**
+ * 发送 FinishConnection
+ */
+export async function FinishConnection(ws: WebSocket): Promise<void> {
+  const msg = createMessage(
+    MsgType.FULL_CLIENT_REQUEST,
+    MsgTypeFlagBits.WITH_EVENT,
+  );
+  msg.event = EventType.FINISH_CONNECTION;
+  msg.payload = new TextEncoder().encode('{}');
+  const data = marshalMessage(msg);
+  return new Promise((resolve, reject) => {
+    ws.send(data, (error?: Error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+/**
+ * 发送 StartSession
+ */
+export async function StartSession(
+  ws: WebSocket,
+  payload: Uint8Array,
+  sessionId: string,
+): Promise<void> {
+  const msg = createMessage(
+    MsgType.FULL_CLIENT_REQUEST,
+    MsgTypeFlagBits.WITH_EVENT,
+  );
+  msg.event = EventType.START_SESSION;
+  msg.sessionId = sessionId;
+  msg.payload = payload;
+  const data = marshalMessage(msg);
+  return new Promise((resolve, reject) => {
+    ws.send(data, (error?: Error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+/**
+ * 发送 FinishSession
+ */
+export async function FinishSession(
+  ws: WebSocket,
+  sessionId: string,
+): Promise<void> {
+  const msg = createMessage(
+    MsgType.FULL_CLIENT_REQUEST,
+    MsgTypeFlagBits.WITH_EVENT,
+  );
+  msg.event = EventType.FINISH_SESSION;
+  msg.sessionId = sessionId;
+  msg.payload = new TextEncoder().encode('{}');
+  const data = marshalMessage(msg);
+  return new Promise((resolve, reject) => {
+    ws.send(data, (error?: Error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+/**
+ * 消息转字符串
+ */
+export function messageToString(msg: Message): string {
+  const eventStr =
+    msg.event !== undefined ? getEventTypeName(msg.event) : 'NoEvent';
+  const typeStr = getMsgTypeName(msg.type);
+
+  switch (msg.type) {
+    case MsgType.AUDIO_ONLY_SERVER:
+    case MsgType.AUDIO_ONLY_CLIENT:
+      if (
+        msg.flag === MsgTypeFlagBits.POSITIVE_SEQ ||
+        msg.flag === MsgTypeFlagBits.NEGATIVE_SEQ
+      ) {
+        return `MsgType: ${typeStr}, EventType: ${eventStr}, Sequence: ${msg.sequence}, PayloadSize: ${msg.payload.length}`;
+      }
+      return `MsgType: ${typeStr}, EventType: ${eventStr}, PayloadSize: ${msg.payload.length}`;
+
+    case MsgType.ERROR:
+      return `MsgType: ${typeStr}, EventType: ${eventStr}, ErrorCode: ${msg.errorCode}, Payload: ${new TextDecoder().decode(msg.payload)}`;
+
+    default:
+      if (
+        msg.flag === MsgTypeFlagBits.POSITIVE_SEQ ||
+        msg.flag === MsgTypeFlagBits.NEGATIVE_SEQ
+      ) {
+        return `MsgType: ${typeStr}, EventType: ${eventStr}, Sequence: ${msg.sequence}, Payload: ${new TextDecoder().decode(msg.payload)}`;
+      }
+      return `MsgType: ${typeStr}, EventType: ${eventStr}, Payload: ${new TextDecoder().decode(msg.payload)}`;
+  }
+}
+
+// 为 Message 添加 toString 方法
+declare module './podcast-protocol.util' {
+  interface Message {
+    toString(): string;
+  }
+}
+
+// 扩展 Message 原型
+Object.defineProperty(
+  Object.getPrototypeOf(createMessage(MsgType.INVALID, MsgTypeFlagBits.NO_SEQ)),
+  'toString',
+  {
+    enumerable: false,
+    configurable: true,
+    writable: true,
+    value: function () {
+      return messageToString(this);
+    },
+  },
+);

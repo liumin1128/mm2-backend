@@ -70,7 +70,6 @@ export class PodcastController {
         retryCount: task.retryCount,
         maxRetries: task.maxRetries,
         lastFinishedRoundId: task.lastFinishedRoundId,
-        subtitleManager: task.subtitleManager,
       },
     };
   }

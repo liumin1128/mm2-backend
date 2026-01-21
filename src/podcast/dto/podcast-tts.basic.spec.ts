@@ -251,7 +251,12 @@ describe('Podcast DTOs - Basic Types', () => {
 
   describe('CreatePodcastDto - debug_mode', () => {
     it('should default debug_mode to false when not provided', () => {
-      const dto = {
+      const dto: {
+        action: number;
+        input_text: string;
+        callback_url: string;
+        debug_mode?: boolean;
+      } = {
         action: ActionType.SUMMARIZE,
         input_text: 'Test text',
         callback_url: 'https://example.com/callback',
@@ -261,7 +266,12 @@ describe('Podcast DTOs - Basic Types', () => {
     });
 
     it('should accept debug_mode as true', () => {
-      const dto = {
+      const dto: {
+        action: number;
+        input_text: string;
+        callback_url: string;
+        debug_mode?: boolean;
+      } = {
         action: ActionType.SUMMARIZE,
         input_text: 'Test text',
         callback_url: 'https://example.com/callback',
