@@ -111,6 +111,7 @@ export class PodcastService {
       this.logger.error(`Task ${taskId} failed: ${errMsg}`);
       void this.sendCallback(taskId, {
         task_id: taskId,
+        input_id: taskContext.inputId,
         status: 'failed',
         error_message: errMsg,
       });
@@ -499,6 +500,7 @@ export class PodcastService {
     // 构建回调 payload
     const callbackPayload: PodcastCallbackPayload = {
       task_id: taskId,
+      input_id: task.inputId,
       status: 'success',
       audio_url: audioUrl,
       subtitle_url: subtitleUrl,
