@@ -810,6 +810,10 @@ export async function FinishSession(
  * 消息转字符串
  */
 export function messageToString(msg: Message): string {
+  if (!msg || msg.type === undefined) {
+    return '[Invalid Message]';
+  }
+
   const eventStr =
     msg.event !== undefined ? getEventTypeName(msg.event) : 'NoEvent';
   const typeStr = getMsgTypeName(msg.type);
@@ -821,41 +825,20 @@ export function messageToString(msg: Message): string {
         msg.flag === MsgTypeFlagBits.POSITIVE_SEQ ||
         msg.flag === MsgTypeFlagBits.NEGATIVE_SEQ
       ) {
-        return `MsgType: ${typeStr}, EventType: ${eventStr}, Sequence: ${msg.sequence}, PayloadSize: ${msg.payload.length}`;
+        return `MsgType: ${typeStr}, EventType: ${eventStr}, Sequence: ${msg.sequence}, PayloadSize: ${msg.payload?.length || 0}`;
       }
-      return `MsgType: ${typeStr}, EventType: ${eventStr}, PayloadSize: ${msg.payload.length}`;
+      return `MsgType: ${typeStr}, EventType: ${eventStr}, PayloadSize: ${msg.payload?.length || 0}`;
 
     case MsgType.ERROR:
-      return `MsgType: ${typeStr}, EventType: ${eventStr}, ErrorCode: ${msg.errorCode}, Payload: ${new TextDecoder().decode(msg.payload)}`;
+      return `MsgType: ${typeStr}, EventType: ${eventStr}, ErrorCode: ${msg.errorCode}, Payload: ${msg.payload ? new TextDecoder().decode(msg.payload) : ''}`;
 
     default:
       if (
         msg.flag === MsgTypeFlagBits.POSITIVE_SEQ ||
         msg.flag === MsgTypeFlagBits.NEGATIVE_SEQ
       ) {
-        return `MsgType: ${typeStr}, EventType: ${eventStr}, Sequence: ${msg.sequence}, Payload: ${new TextDecoder().decode(msg.payload)}`;
+        return `MsgType: ${typeStr}, EventType: ${eventStr}, Sequence: ${msg.sequence}, Payload: ${msg.payload ? new TextDecoder().decode(msg.payload) : ''}`;
       }
-      return `MsgType: ${typeStr}, EventType: ${eventStr}, Payload: ${new TextDecoder().decode(msg.payload)}`;
+      return `MsgType: ${typeStr}, EventType: ${eventStr}, Payload: ${msg.payload ? new TextDecoder().decode(msg.payload) : ''}`;
   }
 }
-
-// 为 Message 添加 toString 方法
-declare module './podcast-protocol.util' {
-  interface Message {
-    toString(): string;
-  }
-}
-
-// 扩展 Message 原型
-Object.defineProperty(
-  Object.getPrototypeOf(createMessage(MsgType.INVALID, MsgTypeFlagBits.NO_SEQ)),
-  'toString',
-  {
-    enumerable: false,
-    configurable: true,
-    writable: true,
-    value: function () {
-      return messageToString(this);
-    },
-  },
-);
