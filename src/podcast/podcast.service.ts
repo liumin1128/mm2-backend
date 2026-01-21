@@ -410,11 +410,12 @@ export class PodcastService {
         return filepath;
       } else {
         const objectPath = `podcast/${task.inputId}/${task.taskId}/${filename}`;
-        return await this.minioService.uploadFile(
+        await this.minioService.uploadFile(
           objectPath,
           audioBuffer,
           `audio/${task.audioFormat}`,
         );
+        return this.minioService.getPublicUrl(objectPath);
       }
     } catch (error) {
       this.logger.error(
@@ -472,21 +473,23 @@ export class PodcastService {
     } else {
       // 正常模式：上传到 MinIO
       const audioObjectPath = `podcast/${task.inputId}/${taskId}/${audioFilename}`;
-      audioUrl = await this.minioService.uploadFile(
+      await this.minioService.uploadFile(
         audioObjectPath,
         audioBuffer,
         `audio/${task.audioFormat}`,
       );
+      audioUrl = this.minioService.getPublicUrl(audioObjectPath);
       this.logger.log(`Audio uploaded: ${audioUrl}`);
 
       // 上传字幕
       if (task.subtitles.length > 0) {
         const subtitleObjectPath = `podcast/${task.inputId}/${taskId}/${subtitleFilename}`;
-        subtitleUrl = await this.minioService.uploadFile(
+        await this.minioService.uploadFile(
           subtitleObjectPath,
           srtBuffer,
           'application/x-subrip',
         );
+        subtitleUrl = this.minioService.getPublicUrl(subtitleObjectPath);
         this.logger.log(`Subtitle uploaded: ${subtitleUrl}`);
       }
     }

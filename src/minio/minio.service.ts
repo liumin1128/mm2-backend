@@ -160,6 +160,15 @@ export class MinioService implements OnModuleInit {
    * 获取公开访问 URL（如果 bucket 设置为公开）
    */
   getPublicUrl(objectName: string): string {
+    // 优先使用自定义公开域名
+    const publicDomain = this.configService.get<string>('MINIO_PUBLIC_DOMAIN');
+    if (publicDomain) {
+      // 格式: https://r2.liumin.lol/podcast/xxx
+      const domain = publicDomain.replace(/\/$/, ''); // 移除末尾斜杠
+      return `${domain}/${objectName}`;
+    }
+
+    // 回退到默认的 MinIO URL
     const endPoint = this.configService.get<string>(
       'MINIO_ENDPOINT',
       'localhost',
