@@ -286,22 +286,8 @@ export class PodcastService {
                 task.accumulatedDuration += roundDuration;
                 task.totalDuration = task.accumulatedDuration;
 
-                // 保存分轮音频
+                // 累积音频数据
                 if (audio.length > 0) {
-                  const roundAudioBuffer = Buffer.concat(audio);
-                  const roundAudioUrl = await this.saveRoundAudio(
-                    task,
-                    currentRound,
-                    currentSpeaker,
-                    roundAudioBuffer,
-                  );
-                  if (roundAudioUrl) {
-                    task.roundAudios.push({
-                      roundId: currentRound,
-                      speaker: currentSpeaker,
-                      audioUrl: roundAudioUrl,
-                    });
-                  }
                   podcastAudio.push(...audio);
                   audio = [];
                 }
@@ -394,49 +380,6 @@ export class PodcastService {
     }
 
     return reqParams;
-  }
-
-  /**
-   * 保存分轮音频
-   */
-  private async saveRoundAudio(
-    task: TaskContext,
-    roundId: number,
-    speaker: string,
-    audioBuffer: Buffer,
-  ): Promise<string | null> {
-    try {
-      const filename = `round_${roundId}.${task.audioFormat}`;
-
-      if (task.debugMode) {
-        const outputDir = path.join(
-          process.cwd(),
-          'debug_output',
-          'podcast',
-          task.inputId,
-          task.taskId,
-        );
-        if (!fs.existsSync(outputDir)) {
-          fs.mkdirSync(outputDir, { recursive: true });
-        }
-        const filepath = path.join(outputDir, filename);
-        await fs.promises.writeFile(filepath, audioBuffer);
-        return filepath;
-      } else {
-        const objectPath = `podcast/${task.inputId}/${task.taskId}/${filename}`;
-        await this.minioService.uploadFile(
-          objectPath,
-          audioBuffer,
-          `audio/${task.audioFormat}`,
-        );
-        return this.minioService.getPublicUrl(objectPath);
-      }
-    } catch (error) {
-      this.logger.error(
-        `Failed to save round ${roundId} audio: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      return null;
-    }
   }
 
   /**
