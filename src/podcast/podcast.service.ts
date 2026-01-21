@@ -79,7 +79,7 @@ export class PodcastService {
    * 创建播客生成任务
    */
   createPodcast(dto: CreatePodcastDto): { taskId: string; message: string } {
-    const taskId = uuidv4();
+    const taskId = dto.taskId || uuidv4();
 
     const taskContext: TaskContext = {
       taskId,

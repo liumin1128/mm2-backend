@@ -102,6 +102,10 @@ export class AigcMetadataDto {
 export class CreatePodcastDto {
   @IsOptional()
   @IsString()
+  taskId?: string;
+
+  @IsOptional()
+  @IsString()
   inputId?: string;
 
   @IsNumber()
