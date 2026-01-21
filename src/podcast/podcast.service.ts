@@ -519,11 +519,7 @@ export class PodcastService {
       .map((entry) => {
         const startTime = this.formatSRTTime(entry.startTime);
         const endTime = this.formatSRTTime(entry.endTime);
-        // 格式: [说话人]: 文本
-        const text = entry.speaker
-          ? `[${entry.speaker}]: ${entry.text}`
-          : entry.text;
-        return `${entry.index}\n${startTime} --> ${endTime}\n${text}\n`;
+        return `${entry.index}\n${startTime} --> ${endTime}\n${entry.text}\n`;
       })
       .join('\n');
   }
