@@ -78,15 +78,15 @@ export class PodcastService {
   /**
    * 创建播客生成任务
    */
-  createPodcast(dto: CreatePodcastDto): { task_id: string; message: string } {
+  createPodcast(dto: CreatePodcastDto): { taskId: string; message: string } {
     const taskId = uuidv4();
 
     const taskContext: TaskContext = {
       taskId,
-      inputId: dto.input_id || 'unknown',
-      callbackUrl: dto.callback_url,
-      audioFormat: dto.audio_config?.format || 'mp3',
-      debugMode: dto.debug_mode || false,
+      inputId: dto.inputId || 'unknown',
+      callbackUrl: dto.callbackUrl,
+      audioFormat: dto.audioConfig?.format || 'mp3',
+      debugMode: dto.debugMode || false,
       // 状态追踪
       status: 'pending',
       currentRound: 0,
@@ -110,15 +110,15 @@ export class PodcastService {
       const errMsg = error instanceof Error ? error.message : String(error);
       this.logger.error(`Task ${taskId} failed: ${errMsg}`);
       void this.sendCallback(taskId, {
-        task_id: taskId,
-        input_id: taskContext.inputId,
+        taskId: taskId,
+        inputId: taskContext.inputId,
         status: 'failed',
-        error_message: errMsg,
+        errorMessage: errMsg,
       });
     });
 
     return {
-      task_id: taskId,
+      taskId: taskId,
       message: '播客生成任务已创建，生成完成后将通过回调通知',
     };
   }
@@ -234,7 +234,13 @@ export class PodcastService {
 
             case MsgType.FULL_SERVER_RESPONSE:
               if (msg.event === EventType.PODCAST_ROUND_START) {
-                const data = JSON.parse(new TextDecoder().decode(msg.payload));
+                const data = JSON.parse(
+                  new TextDecoder().decode(msg.payload),
+                ) as {
+                  round_id: number;
+                  speaker?: string;
+                  text?: string;
+                };
                 currentRound = data.round_id;
                 currentSpeaker = data.speaker || '';
                 isPodcastRoundEnd = false;
@@ -249,7 +255,12 @@ export class PodcastService {
                   `Round ${currentRound} started, speaker: ${currentSpeaker}`,
                 );
               } else if (msg.event === EventType.PODCAST_ROUND_END) {
-                const data = JSON.parse(new TextDecoder().decode(msg.payload));
+                const data = JSON.parse(
+                  new TextDecoder().decode(msg.payload),
+                ) as {
+                  is_error?: boolean;
+                  audio_duration?: number;
+                };
                 if (data.is_error) {
                   this.logger.error(`Round error: ${JSON.stringify(data)}`);
                   break;
@@ -297,7 +308,9 @@ export class PodcastService {
                 task.lastFinishedRoundId = currentRound;
                 this.logger.log(`Round ${currentRound} finished`);
               } else if (msg.event === EventType.PODCAST_END) {
-                const data = JSON.parse(new TextDecoder().decode(msg.payload));
+                const data = JSON.parse(
+                  new TextDecoder().decode(msg.payload),
+                ) as Record<string, unknown>;
                 this.logger.log(`Podcast end: ${JSON.stringify(data)}`);
               }
               break;
@@ -352,23 +365,23 @@ export class PodcastService {
     lastRoundID: number,
   ): Record<string, unknown> {
     const reqParams: Record<string, unknown> = {
-      input_id: dto.input_id || taskId,
-      input_text: dto.input_text || '',
-      prompt_text: dto.prompt_text || '',
+      input_id: dto.inputId || taskId,
+      input_text: dto.inputText || '',
+      prompt_text: dto.promptText || '',
       action: dto.action,
-      speaker_info: dto.speaker_info || { random_order: false },
-      nlp_texts: dto.nlp_texts || [],
-      use_head_music: dto.use_head_music ?? false,
-      use_tail_music: dto.use_tail_music ?? false,
+      speaker_info: dto.speakerInfo || { random_order: false },
+      nlp_texts: dto.nlpTexts || [],
+      use_head_music: dto.useHeadMusic ?? false,
+      use_tail_music: dto.useTailMusic ?? false,
       input_info: {
-        input_url: dto.input_info?.input_url || '',
-        return_audio_url: dto.input_info?.return_audio_url ?? false,
-        only_nlp_text: dto.input_info?.only_nlp_text ?? false,
+        input_url: dto.inputInfo?.inputUrl || '',
+        return_audio_url: dto.inputInfo?.returnAudioUrl ?? false,
+        only_nlp_text: dto.inputInfo?.onlyNlpText ?? false,
       },
       audio_config: {
-        format: dto.audio_config?.format || 'mp3',
-        sample_rate: dto.audio_config?.sample_rate || 24000,
-        speech_rate: dto.audio_config?.speech_rate || 0,
+        format: dto.audioConfig?.format || 'mp3',
+        sample_rate: dto.audioConfig?.sampleRate || 24000,
+        speech_rate: dto.audioConfig?.speechRate || 0,
       },
     };
 
@@ -499,14 +512,14 @@ export class PodcastService {
 
     // 构建回调 payload
     const callbackPayload: PodcastCallbackPayload = {
-      task_id: taskId,
-      input_id: task.inputId,
+      taskId: taskId,
+      inputId: task.inputId,
       status: 'success',
-      audio_url: audioUrl,
-      subtitle_url: subtitleUrl,
-      round_audios: task.roundAudios,
+      audioUrl: audioUrl,
+      subtitleUrl: subtitleUrl,
+      roundAudios: task.roundAudios,
       duration: task.totalDuration,
-      podcast_info: {
+      podcastInfo: {
         totalDuration: task.totalDuration,
         totalRounds: task.roundAudios.length,
         speakers: Array.from(task.speakers),

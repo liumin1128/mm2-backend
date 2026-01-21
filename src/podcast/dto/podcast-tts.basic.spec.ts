@@ -87,26 +87,26 @@ describe('Podcast DTOs - Basic Types', () => {
   describe('PodcastCallbackPayload structure', () => {
     it('should support success callback with usage info', () => {
       const payload = {
-        task_id: 'task-123',
+        taskId: 'task-123',
         status: 'success' as const,
-        audio_url: 'https://minio.example.com/podcast.mp3',
+        audioUrl: 'https://minio.example.com/podcast.mp3',
         usage: {
           inputTextTokens: 1024,
           outputAudioTokens: 2048,
         },
       };
 
-      expect(payload.task_id).toBe('task-123');
+      expect(payload.taskId).toBe('task-123');
       expect(payload.status).toBe('success');
       expect(payload.usage?.inputTextTokens).toBe(1024);
     });
 
-    it('should support payload with podcast_info and usage', () => {
+    it('should support payload with podcastInfo and usage', () => {
       const payload = {
-        task_id: 'task-123',
+        taskId: 'task-123',
         status: 'success' as const,
-        audio_url: 'https://minio.example.com/podcast.mp3',
-        podcast_info: {
+        audioUrl: 'https://minio.example.com/podcast.mp3',
+        podcastInfo: {
           totalDuration: 120.5,
           totalRounds: 5,
           speakers: ['Alice', 'Bob'],
@@ -121,28 +121,28 @@ describe('Podcast DTOs - Basic Types', () => {
         },
       };
 
-      expect(payload.podcast_info?.totalRounds).toBe(5);
-      expect(payload.podcast_info?.usage?.inputTextTokens).toBe(1024);
+      expect(payload.podcastInfo?.totalRounds).toBe(5);
+      expect(payload.podcastInfo?.usage?.inputTextTokens).toBe(1024);
       expect(payload.usage?.outputAudioTokens).toBe(2048);
     });
 
     it('should support error callback without usage', () => {
       const payload = {
-        task_id: 'task-123',
+        taskId: 'task-123',
         status: 'failed' as const,
-        error_message: 'Connection failed',
+        errorMessage: 'Connection failed',
       };
 
       expect(payload.status).toBe('failed');
-      expect(payload.error_message).toBeDefined();
+      expect(payload.errorMessage).toBeDefined();
     });
 
-    it('should support round_audios in callback', () => {
+    it('should support roundAudios in callback', () => {
       const payload = {
-        task_id: 'task-123',
+        taskId: 'task-123',
         status: 'success' as const,
-        audio_url: 'https://minio.example.com/podcast.mp3',
-        round_audios: [
+        audioUrl: 'https://minio.example.com/podcast.mp3',
+        roundAudios: [
           {
             roundId: 1,
             speaker: 'Alice',
@@ -156,58 +156,58 @@ describe('Podcast DTOs - Basic Types', () => {
         ],
       };
 
-      expect(payload.round_audios).toHaveLength(2);
-      expect(payload.round_audios?.[0].speaker).toBe('Alice');
+      expect(payload.roundAudios).toHaveLength(2);
+      expect(payload.roundAudios?.[0].speaker).toBe('Alice');
     });
   });
 
-  describe('only_nlp_text and return_audio_url parameters', () => {
-    it('should support InputInfoDto with only_nlp_text', () => {
+  describe('onlyNlpText and returnAudioUrl parameters', () => {
+    it('should support InputInfoDto with onlyNlpText', () => {
       const inputInfo = {
-        only_nlp_text: true,
+        onlyNlpText: true,
       };
 
-      expect(inputInfo.only_nlp_text).toBe(true);
+      expect(inputInfo.onlyNlpText).toBe(true);
     });
 
-    it('should support InputInfoDto with return_audio_url', () => {
+    it('should support InputInfoDto with returnAudioUrl', () => {
       const inputInfo = {
-        return_audio_url: true,
-        input_url: 'https://example.com/text.txt',
+        returnAudioUrl: true,
+        inputUrl: 'https://example.com/text.txt',
       };
 
-      expect(inputInfo.return_audio_url).toBe(true);
-      expect(inputInfo.input_url).toBeDefined();
+      expect(inputInfo.returnAudioUrl).toBe(true);
+      expect(inputInfo.inputUrl).toBeDefined();
     });
 
     it('should support both parameters together', () => {
       const inputInfo = {
-        only_nlp_text: false,
-        return_audio_url: true,
-        input_url: 'https://example.com/text.txt',
-        input_text_max_length: 1000,
+        onlyNlpText: false,
+        returnAudioUrl: true,
+        inputUrl: 'https://example.com/text.txt',
+        inputTextMaxLength: 1000,
       };
 
-      expect(inputInfo.only_nlp_text).toBe(false);
-      expect(inputInfo.return_audio_url).toBe(true);
-      expect(inputInfo.input_text_max_length).toBe(1000);
+      expect(inputInfo.onlyNlpText).toBe(false);
+      expect(inputInfo.returnAudioUrl).toBe(true);
+      expect(inputInfo.inputTextMaxLength).toBe(1000);
     });
   });
 
   describe('AudioConfigDto defaults', () => {
-    it('should have correct default sample_rate', () => {
+    it('should have correct default sampleRate', () => {
       expect(24000).toBe(24000);
     });
 
-    it('should have correct default speech_rate', () => {
+    it('should have correct default speechRate', () => {
       expect(0).toBe(0);
     });
 
     it('should support custom audio format', () => {
       const config = {
         format: AudioFormat.OGG_OPUS,
-        sample_rate: 24000,
-        speech_rate: 0,
+        sampleRate: 24000,
+        speechRate: 0,
       };
 
       expect(config.format).toBe(AudioFormat.OGG_OPUS);
@@ -218,78 +218,78 @@ describe('Podcast DTOs - Basic Types', () => {
     it('should support complete workflow with all parameters', () => {
       const dto = {
         action: ActionType.DIALOGUE,
-        input_id: 'input-1',
-        nlp_texts: [
+        inputId: 'input-1',
+        nlpTexts: [
           { speaker: 'Alice', text: 'Hello' },
           { speaker: 'Bob', text: 'Hi' },
         ],
-        input_info: {
-          only_nlp_text: false,
-          return_audio_url: true,
-          input_url: 'https://example.com/text.txt',
+        inputInfo: {
+          onlyNlpText: false,
+          returnAudioUrl: true,
+          inputUrl: 'https://example.com/text.txt',
         },
-        audio_config: {
+        audioConfig: {
           format: AudioFormat.MP3,
-          sample_rate: 24000,
-          speech_rate: 0,
+          sampleRate: 24000,
+          speechRate: 0,
         },
-        speaker_info: {
-          random_order: false,
+        speakerInfo: {
+          randomOrder: false,
           speakers: ['Alice', 'Bob'],
         },
-        use_head_music: true,
-        use_tail_music: false,
-        callback_url: 'https://example.com/callback',
+        useHeadMusic: true,
+        useTailMusic: false,
+        callbackUrl: 'https://example.com/callback',
       };
 
       expect(dto.action).toBe(ActionType.DIALOGUE);
-      expect(dto.input_info?.only_nlp_text).toBe(false);
-      expect(dto.input_info?.return_audio_url).toBe(true);
-      expect(dto.callback_url).toBeDefined();
+      expect(dto.inputInfo?.onlyNlpText).toBe(false);
+      expect(dto.inputInfo?.returnAudioUrl).toBe(true);
+      expect(dto.callbackUrl).toBeDefined();
     });
   });
 
-  describe('CreatePodcastDto - debug_mode', () => {
-    it('should default debug_mode to false when not provided', () => {
+  describe('CreatePodcastDto - debugMode', () => {
+    it('should default debugMode to false when not provided', () => {
       const dto: {
         action: number;
-        input_text: string;
-        callback_url: string;
-        debug_mode?: boolean;
+        inputText: string;
+        callbackUrl: string;
+        debugMode?: boolean;
       } = {
         action: ActionType.SUMMARIZE,
-        input_text: 'Test text',
-        callback_url: 'https://example.com/callback',
+        inputText: 'Test text',
+        callbackUrl: 'https://example.com/callback',
       };
 
-      expect(dto.debug_mode).toBeUndefined();
+      expect(dto.debugMode).toBeUndefined();
     });
 
-    it('should accept debug_mode as true', () => {
+    it('should accept debugMode as true', () => {
       const dto: {
         action: number;
-        input_text: string;
-        callback_url: string;
-        debug_mode?: boolean;
+        inputText: string;
+        callbackUrl: string;
+        debugMode?: boolean;
       } = {
         action: ActionType.SUMMARIZE,
-        input_text: 'Test text',
-        callback_url: 'https://example.com/callback',
-        debug_mode: true,
+        inputText: 'Test text',
+        callbackUrl: 'https://example.com/callback',
+        debugMode: true,
       };
 
-      expect(dto.debug_mode).toBe(true);
+      expect(dto.debugMode).toBe(true);
     });
 
-    it('should accept debug_mode as false', () => {
+    it('should accept debugMode as false', () => {
       const dto = {
         action: ActionType.SUMMARIZE,
-        input_text: 'Test text',
-        callback_url: 'https://example.com/callback',
-        debug_mode: false,
+        inputText: 'Test text',
+        callbackUrl: 'https://example.com/callback',
+        debugMode: false,
       };
 
-      expect(dto.debug_mode).toBe(false);
+      expect(dto.debugMode).toBe(false);
     });
   });
 });

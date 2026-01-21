@@ -17,7 +17,7 @@ export class CallbackService {
   ): Promise<boolean> {
     try {
       this.logger.log(
-        `Sending callback to ${callbackUrl}, taskId: ${payload.task_id}, status: ${payload.status}`,
+        `Sending callback to ${callbackUrl}, taskId: ${payload.taskId}, status: ${payload.status}`,
       );
 
       const response = await axios.post(callbackUrl, payload, {
@@ -28,7 +28,7 @@ export class CallbackService {
       });
 
       if (response.status >= 200 && response.status < 300) {
-        this.logger.log(`Callback success for task: ${payload.task_id}`);
+        this.logger.log(`Callback success for task: ${payload.taskId}`);
         return true;
       }
 
@@ -38,7 +38,7 @@ export class CallbackService {
       return false;
     } catch (error) {
       this.logger.error(
-        `Callback failed for task ${payload.task_id}: ${error instanceof Error ? error.message : error}`,
+        `Callback failed for task ${payload.taskId}: ${error instanceof Error ? error.message : error}`,
       );
       return false;
     }
@@ -73,7 +73,7 @@ export class CallbackService {
     }
 
     this.logger.error(
-      `All callback attempts failed for task: ${payload.task_id}`,
+      `All callback attempts failed for task: ${payload.taskId}`,
     );
     return false;
   }

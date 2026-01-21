@@ -691,7 +691,7 @@ export async function ReceiveMessage(ws: WebSocket): Promise<Message> {
       if (index !== -1) {
         callbacks.splice(index, 1);
       }
-      reject(error);
+      reject(new Error(error.message || 'WebSocket error'));
     };
 
     const resolver = (msg: Message) => {

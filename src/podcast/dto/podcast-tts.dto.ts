@@ -33,11 +33,11 @@ export class AudioConfigDto {
 
   @IsOptional()
   @IsNumber()
-  sample_rate?: number = 24000;
+  sampleRate?: number = 24000;
 
   @IsOptional()
   @IsNumber()
-  speech_rate?: number = 0;
+  speechRate?: number = 0;
 }
 
 export class NlpTextDto {
@@ -51,25 +51,25 @@ export class NlpTextDto {
 export class InputInfoDto {
   @IsOptional()
   @IsString()
-  input_url?: string;
+  inputUrl?: string;
 
   @IsOptional()
   @IsBoolean()
-  only_nlp_text?: boolean;
+  onlyNlpText?: boolean;
 
   @IsOptional()
   @IsBoolean()
-  return_audio_url?: boolean;
+  returnAudioUrl?: boolean;
 
   @IsOptional()
   @IsNumber()
-  input_text_max_length?: number;
+  inputTextMaxLength?: number;
 }
 
 export class SpeakerInfoDto {
   @IsOptional()
   @IsBoolean()
-  random_order?: boolean = true;
+  randomOrder?: boolean = true;
 
   @IsOptional()
   @IsArray()
@@ -84,25 +84,25 @@ export class AigcMetadataDto {
 
   @IsOptional()
   @IsString()
-  content_producer?: string;
+  contentProducer?: string;
 
   @IsOptional()
   @IsString()
-  produce_id?: string;
+  produceId?: string;
 
   @IsOptional()
   @IsString()
-  content_propagator?: string;
+  contentPropagator?: string;
 
   @IsOptional()
   @IsString()
-  propagate_id?: string;
+  propagateId?: string;
 }
 
 export class CreatePodcastDto {
   @IsOptional()
   @IsString()
-  input_id?: string;
+  inputId?: string;
 
   @IsNumber()
   @IsEnum(ActionType)
@@ -110,56 +110,56 @@ export class CreatePodcastDto {
 
   @IsOptional()
   @IsString()
-  input_text?: string;
+  inputText?: string;
 
   @IsOptional()
   @IsString()
-  prompt_text?: string;
+  promptText?: string;
 
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => NlpTextDto)
-  nlp_texts?: NlpTextDto[];
+  nlpTexts?: NlpTextDto[];
 
   @IsOptional()
   @ValidateNested()
   @Type(() => InputInfoDto)
-  input_info?: InputInfoDto;
+  inputInfo?: InputInfoDto;
 
   @IsOptional()
   @ValidateNested()
   @Type(() => AudioConfigDto)
-  audio_config?: AudioConfigDto;
+  audioConfig?: AudioConfigDto;
 
   @IsOptional()
   @ValidateNested()
   @Type(() => SpeakerInfoDto)
-  speaker_info?: SpeakerInfoDto;
+  speakerInfo?: SpeakerInfoDto;
 
   @IsOptional()
   @IsBoolean()
-  use_head_music?: boolean = false;
+  useHeadMusic?: boolean = false;
 
   @IsOptional()
   @IsBoolean()
-  use_tail_music?: boolean = false;
+  useTailMusic?: boolean = false;
 
   @IsOptional()
   @IsBoolean()
-  aigc_watermark?: boolean = false;
+  aigcWatermark?: boolean = false;
 
   @IsOptional()
   @ValidateNested()
   @Type(() => AigcMetadataDto)
-  aigc_metadata?: AigcMetadataDto;
+  aigcMetadata?: AigcMetadataDto;
 
   @IsUrl()
-  callback_url: string;
+  callbackUrl: string;
 
   @IsOptional()
   @IsBoolean()
-  debug_mode?: boolean = false;
+  debugMode?: boolean = false;
 }
 
 export interface UsageInfo {
@@ -175,14 +175,14 @@ export interface PodcastInfoDetail {
 }
 
 export class PodcastCallbackPayload {
-  task_id: string;
-  input_id?: string;
+  taskId: string;
+  inputId?: string;
   status: 'success' | 'failed';
-  audio_url?: string;
-  subtitle_url?: string;
-  round_audios?: Array<{ roundId: number; speaker: string; audioUrl: string }>;
-  podcast_info?: PodcastInfoDetail;
+  audioUrl?: string;
+  subtitleUrl?: string;
+  roundAudios?: Array<{ roundId: number; speaker: string; audioUrl: string }>;
+  podcastInfo?: PodcastInfoDetail;
   usage?: UsageInfo;
-  error_message?: string;
+  errorMessage?: string;
   duration?: number;
 }
