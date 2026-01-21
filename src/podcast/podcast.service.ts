@@ -423,7 +423,7 @@ export class PodcastService {
         await fs.promises.writeFile(filepath, audioBuffer);
         return filepath;
       } else {
-        const objectPath = `podcast/${task.inputId}/audio/${task.taskId}/${filename}`;
+        const objectPath = `podcast/${task.inputId}/${task.taskId}/${filename}`;
         await this.minioService.uploadFile(
           objectPath,
           audioBuffer,
@@ -486,7 +486,7 @@ export class PodcastService {
       }
     } else {
       // 正常模式：上传到 MinIO
-      const audioObjectPath = `podcast/${task.inputId}/audio/${taskId}/${audioFilename}`;
+      const audioObjectPath = `podcast/${task.inputId}/${taskId}/${audioFilename}`;
       await this.minioService.uploadFile(
         audioObjectPath,
         audioBuffer,
@@ -497,7 +497,7 @@ export class PodcastService {
 
       // 上传字幕
       if (task.subtitles.length > 0) {
-        const subtitleObjectPath = `podcast/${task.inputId}/audio/${taskId}/${subtitleFilename}`;
+        const subtitleObjectPath = `podcast/${task.inputId}/${taskId}/${subtitleFilename}`;
         await this.minioService.uploadFile(
           subtitleObjectPath,
           srtBuffer,
