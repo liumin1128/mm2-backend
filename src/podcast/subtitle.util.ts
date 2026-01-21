@@ -30,16 +30,14 @@ export interface PodcastInfo {
 export interface SubtitleConfig {
   /** 每条字幕的最大字符数（中文约15-20字为宜） */
   maxCharsPerLine: number;
-  /** 每条字幕的最大时长（秒） */
-  maxDurationPerSubtitle: number;
-  /** 最小时长（秒），避免字幕闪过太快 */
-  minDurationPerSubtitle: number;
+  /** @deprecated 不再使用，时间按字符比例精确分配 */
+  maxDurationPerSubtitle?: number;
+  /** @deprecated 不再使用，时间按字符比例精确分配 */
+  minDurationPerSubtitle?: number;
 }
 
 const DEFAULT_SUBTITLE_CONFIG: SubtitleConfig = {
   maxCharsPerLine: 25,
-  maxDurationPerSubtitle: 6,
-  minDurationPerSubtitle: 1.5,
 };
 
 /**
@@ -182,52 +180,58 @@ export class SubtitleManager {
 
   /**
    * 更新字幕条目的结束时间，并根据时长分配多条字幕
+   *
+   * 锚点机制说明：
+   * - 每轮音频生成返回的 duration 是精确时长，作为字幕截断的锚点
+   * - roundStartTime 和 roundEndTime 是精确的时间边界（锚点）
+   * - 轮内的多条字幕按字符比例在两个锚点之间插值分配
+   * - 这样保证了：每轮的起止时间与音频完全对齐，轮内字幕按阅读速度均匀分布
    */
   updateSubtitleEndTime(roundId: number, duration: number): void {
     const pendingRound = this.pendingRounds.get(roundId);
 
     if (pendingRound) {
       const { speaker, segments } = pendingRound;
-
-      // 根据字符数比例分配时间
       const totalChars = segments.reduce((sum, s) => sum + s.length, 0);
-      let segmentStartTime = this.currentStartTime;
 
-      for (const segment of segments) {
-        // 按字符比例计算时长
-        let segmentDuration = (segment.length / totalChars) * duration;
+      // 【锚点】本轮音频的精确起止时间
+      const roundStartTime = this.currentStartTime; // 锚点1：轮次开始
+      const roundEndTime = this.currentStartTime + duration; // 锚点2：轮次结束
 
-        // 应用时长限制
-        segmentDuration = Math.max(
-          this.config.minDurationPerSubtitle,
-          Math.min(this.config.maxDurationPerSubtitle, segmentDuration),
-        );
+      // 在两个锚点之间，按字符比例插值分配时间
+      let accumulatedChars = 0;
+
+      for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i];
+
+        // 插值计算：当前字幕起始时间 = 起始锚点 + (已累计字符/总字符) × 轮次时长
+        const segmentStartTime =
+          roundStartTime + (accumulatedChars / totalChars) * duration;
+
+        accumulatedChars += segment.length;
+
+        // 最后一条字幕的结束时间直接对齐到结束锚点，避免浮点数精度问题
+        const segmentEndTime =
+          i === segments.length - 1
+            ? roundEndTime
+            : roundStartTime + (accumulatedChars / totalChars) * duration;
 
         const subtitle: SubtitleEntry = {
           index: this.currentSubtitleIndex++,
           startTime: segmentStartTime,
-          endTime: segmentStartTime + segmentDuration,
+          endTime: segmentEndTime,
           speaker,
           text: segment,
           roundId,
         };
 
         this.subtitles.push(subtitle);
-        segmentStartTime = subtitle.endTime;
-      }
-
-      // 修正最后一条字幕的结束时间，确保与实际音频时长对齐
-      if (this.subtitles.length > 0) {
-        const lastSubtitle = this.subtitles[this.subtitles.length - 1];
-        if (lastSubtitle.roundId === roundId) {
-          lastSubtitle.endTime = this.currentStartTime + duration;
-        }
       }
 
       this.pendingRounds.delete(roundId);
     }
 
-    // 累加时间
+    // 推进时间锚点到下一轮
     this.totalDuration += duration;
     this.currentStartTime += duration;
   }
